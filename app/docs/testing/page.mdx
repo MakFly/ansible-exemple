@@ -1,0 +1,1821 @@
+# Testing & CI/CD
+
+Guide complet sur les tests et l'intégration continue avec Ansible.
+
+## Molecule
+
+Molecule est le framework de test officiel pour Ansible. Il permet de tester les rôles dans des environnements isolés.
+
+### Installation
+
+```bash
+# Installation via pip
+pip install molecule
+
+# Avec le driver Docker
+pip install molecule[docker]
+
+# Avec le driver Podman
+pip install molecule[podman]
+
+# Avec le driver Vagrant
+pip install molecule[vagrant]
+
+# Installation complète avec tous les drivers
+pip install molecule molecule-docker molecule-vagrant molecule-podman
+```
+
+### Initialisation d'un rôle avec Molecule
+
+```bash
+# Créer un nouveau rôle avec Molecule
+molecule init role mon_role
+
+# Ajouter Molecule à un rôle existant
+cd roles/mon_role
+molecule init scenario default
+
+# Créer un scénario supplémentaire
+molecule init scenario centos
+```
+
+### Structure d'un rôle avec Molecule
+
+```
+roles/mon_role/
+├── molecule/
+│   ├── default/
+│   │   ├── converge.yml        # Playbook de test
+│   │   ├── molecule.yml        # Configuration Molecule
+│   │   ├── prepare.yml         # Préparation de l'environnement
+│   │   ├── verify.yml          # Tests de vérification
+│   │   └── requirements.yml    # Dépendances des collections
+│   └── centos/                 # Scénario alternatif
+│       └── ...
+├── defaults/
+├── handlers/
+├── tasks/
+└── ...
+```
+
+### Configuration molecule.yml complète
+
+```yaml
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: ubuntu-22
+    image: geerlingguy/docker-ubuntu2204-ansible:latest
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+
+  - name: debian-11
+    image: geerlingguy/docker-debian11-ansible:latest
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+
+  - name: centos-8
+    image: geerlingguy/docker-centos8-ansible:latest
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      callback_whitelist: profile_tasks, timer, yaml
+      stdout_callback: yaml
+    ssh_connection:
+      pipelining: true
+  inventory:
+    host_vars:
+      ubuntu-22:
+        ansible_user: root
+      debian-11:
+        ansible_user: root
+      centos-8:
+        ansible_user: root
+  playbooks:
+    converge: converge.yml
+    prepare: prepare.yml
+    verify: verify.yml
+  lint: |
+    set -e
+    yamllint .
+    ansible-lint
+
+verifier:
+  name: ansible
+
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - cleanup
+    - destroy
+```
+
+### Drivers Molecule
+
+#### Docker (recommandé pour la vitesse)
+
+```yaml
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: geerlingguy/docker-ubuntu2204-ansible:latest
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+```
+
+#### Vagrant (pour tests plus réalistes)
+
+```yaml
+driver:
+  name: vagrant
+  provider:
+    name: virtualbox
+
+platforms:
+  - name: ubuntu-22
+    box: ubuntu/jammy64
+    memory: 2048
+    cpus: 2
+
+  - name: centos-8
+    box: centos/8
+    memory: 2048
+    cpus: 2
+```
+
+#### Podman (alternative à Docker)
+
+```yaml
+driver:
+  name: podman
+
+platforms:
+  - name: ubuntu-22
+    image: geerlingguy/docker-ubuntu2204-ansible:latest
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+```
+
+### Scénarios Molecule
+
+#### converge.yml - Playbook principal
+
+```yaml
+---
+- name: Converge
+  hosts: all
+  become: true
+
+  pre_tasks:
+    - name: Mettre à jour le cache apt (Debian)
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == 'Debian'
+
+    - name: Mettre à jour le cache yum (RedHat)
+      yum:
+        update_cache: true
+      when: ansible_os_family == 'RedHat'
+
+  roles:
+    - role: mon_role
+      vars:
+        mon_role_port: 8080
+        mon_role_enable: true
+```
+
+#### prepare.yml - Préparation de l'environnement
+
+```yaml
+---
+- name: Prepare
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Installer les dépendances système
+      package:
+        name:
+          - curl
+          - wget
+          - git
+        state: present
+
+    - name: Créer des utilisateurs de test
+      user:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - testuser1
+        - testuser2
+
+    - name: Créer des répertoires requis
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/app
+        - /var/log/app
+```
+
+#### verify.yml - Tests de vérification (Ansible)
+
+```yaml
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Vérifier que le service est actif
+      service:
+        name: mon_service
+        state: started
+      check_mode: true
+      register: service_status
+      failed_when: service_status.changed
+
+    - name: Vérifier que le port est ouvert
+      wait_for:
+        port: 8080
+        timeout: 5
+        state: started
+
+    - name: Vérifier la présence du fichier de configuration
+      stat:
+        path: /etc/mon_app/config.yml
+      register: config_file
+      failed_when: not config_file.stat.exists
+
+    - name: Vérifier le contenu de la configuration
+      slurp:
+        src: /etc/mon_app/config.yml
+      register: config_content
+      failed_when: "'port: 8080' not in config_content.content | b64decode"
+
+    - name: Tester l'endpoint HTTP
+      uri:
+        url: http://localhost:8080/health
+        status_code: 200
+        timeout: 10
+```
+
+### Commandes Molecule
+
+```bash
+# Tester tout le cycle de vie
+molecule test
+
+# Créer les instances
+molecule create
+
+# Exécuter le playbook converge
+molecule converge
+
+# Exécuter les tests verify
+molecule verify
+
+# Tester l'idempotence (doit retourner 0 changements)
+molecule idempotence
+
+# Se connecter à une instance
+molecule login
+molecule login -h instance-name
+
+# Détruire les instances
+molecule destroy
+
+# Lister les scénarios disponibles
+molecule list
+
+# Exécuter un scénario spécifique
+molecule test -s centos
+
+# Debug : garder les instances après échec
+molecule test --destroy=never
+
+# Exécuter une partie de la séquence
+molecule create
+molecule converge
+# ... faire des modifications ...
+molecule converge  # Tester à nouveau
+molecule verify
+molecule destroy
+```
+
+## Tests avec Testinfra
+
+Testinfra permet d'écrire des tests en Python pour vérifier l'état du système.
+
+### Installation
+
+```bash
+pip install testinfra
+pip install molecule[testinfra]
+```
+
+### Configuration dans molecule.yml
+
+```yaml
+verifier:
+  name: testinfra
+  options:
+    v: 1  # Verbose
+
+  additional_files_or_dirs:
+    - ../tests/*.py
+```
+
+### Structure des tests
+
+```
+roles/mon_role/
+├── molecule/
+│   └── default/
+│       ├── molecule.yml
+│       ├── converge.yml
+│       └── tests/
+│           ├── test_default.py
+│           └── test_service.py
+```
+
+### Exemples de tests Testinfra
+
+#### test_default.py - Tests de base
+
+```python
+import os
+import testinfra.utils.ansible_runner
+
+testinfra_hosts = testinfra.utils.ansible_runner.AnsibleRunner(
+    os.environ['MOLECULE_INVENTORY_FILE']
+).get_hosts('all')
+
+
+def test_hosts_file(host):
+    """Vérifier que /etc/hosts existe"""
+    f = host.file('/etc/hosts')
+    assert f.exists
+    assert f.user == 'root'
+    assert f.group == 'root'
+
+
+def test_package_installed(host):
+    """Vérifier l'installation des packages"""
+    packages = ['nginx', 'curl', 'wget']
+    for pkg in packages:
+        assert host.package(pkg).is_installed
+
+
+def test_service_running(host):
+    """Vérifier que le service tourne"""
+    service = host.service('nginx')
+    assert service.is_running
+    assert service.is_enabled
+
+
+def test_config_file(host):
+    """Vérifier la configuration"""
+    config = host.file('/etc/nginx/nginx.conf')
+    assert config.exists
+    assert config.user == 'root'
+    assert config.group == 'root'
+    assert config.mode == 0o644
+    assert config.contains('worker_processes')
+
+
+def test_port_listening(host):
+    """Vérifier que le port écoute"""
+    assert host.socket('tcp://0.0.0.0:80').is_listening
+    assert host.socket('tcp://0.0.0.0:443').is_listening
+
+
+def test_user_exists(host):
+    """Vérifier l'existence des utilisateurs"""
+    user = host.user('www-data')
+    assert user.exists
+    assert user.shell == '/usr/sbin/nologin'
+
+
+def test_directory_permissions(host):
+    """Vérifier les permissions des répertoires"""
+    directory = host.file('/var/www/html')
+    assert directory.exists
+    assert directory.is_directory
+    assert directory.user == 'www-data'
+    assert directory.group == 'www-data'
+    assert directory.mode == 0o755
+
+
+def test_http_response(host):
+    """Tester la réponse HTTP"""
+    cmd = host.run('curl -f http://localhost/')
+    assert cmd.rc == 0
+    assert 'Welcome' in cmd.stdout
+
+
+def test_command_execution(host):
+    """Tester l'exécution d'une commande"""
+    cmd = host.run('nginx -t')
+    assert cmd.rc == 0
+    assert 'syntax is ok' in cmd.stderr
+```
+
+#### test_service.py - Tests avancés
+
+```python
+import os
+import pytest
+import testinfra.utils.ansible_runner
+
+testinfra_hosts = testinfra.utils.ansible_runner.AnsibleRunner(
+    os.environ['MOLECULE_INVENTORY_FILE']
+).get_hosts('all')
+
+
+@pytest.mark.parametrize('pkg', [
+    'nginx',
+    'python3',
+    'git',
+])
+def test_packages_installed(host, pkg):
+    """Vérifier plusieurs packages avec paramétrage"""
+    package = host.package(pkg)
+    assert package.is_installed
+
+
+@pytest.mark.parametrize('port', [
+    '80',
+    '443',
+])
+def test_ports_listening(host, port):
+    """Vérifier plusieurs ports"""
+    socket = host.socket(f'tcp://0.0.0.0:{port}')
+    assert socket.is_listening
+
+
+def test_environment_variable(host):
+    """Vérifier les variables d'environnement"""
+    env = host.run('echo $APP_ENV')
+    assert env.stdout.strip() == 'production'
+
+
+def test_cron_job(host):
+    """Vérifier les tâches cron"""
+    cron = host.run('crontab -l')
+    assert '0 2 * * * /usr/local/bin/backup.sh' in cron.stdout
+
+
+def test_systemd_timer(host):
+    """Vérifier les timers systemd"""
+    timer = host.service('backup.timer')
+    assert timer.is_enabled
+    assert timer.is_running
+
+
+def test_file_content_with_regex(host):
+    """Vérifier le contenu avec regex"""
+    config = host.file('/etc/app/config.yml')
+    assert config.contains(r'port:\s+8080')
+    assert config.contains(r'debug:\s+false')
+
+
+def test_sudo_permissions(host):
+    """Vérifier les permissions sudo"""
+    sudoers = host.file('/etc/sudoers.d/app-user')
+    assert sudoers.exists
+    assert sudoers.contains('app-user ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart app')
+
+
+def test_ssl_certificate(host):
+    """Vérifier le certificat SSL"""
+    cert = host.file('/etc/ssl/certs/app.crt')
+    assert cert.exists
+
+    # Vérifier la validité du certificat
+    cmd = host.run('openssl x509 -in /etc/ssl/certs/app.crt -noout -checkend 86400')
+    assert cmd.rc == 0
+```
+
+### Exécution des tests Testinfra
+
+```bash
+# Via Molecule
+molecule verify
+
+# Directement avec pytest
+pytest molecule/default/tests/ -v
+
+# Avec coverage
+pytest --cov=roles --cov-report=html
+
+# Tests parallèles
+pytest -n 4 molecule/default/tests/
+```
+
+## ansible-lint
+
+Outil de linting pour détecter les problèmes dans les playbooks et rôles.
+
+### Installation
+
+```bash
+# Via pip
+pip install ansible-lint
+
+# Avec tous les extras
+pip install ansible-lint[yamllint]
+```
+
+### Configuration .ansible-lint
+
+Créer `.ansible-lint` à la racine du projet:
+
+```yaml
+---
+# Exclure des chemins
+exclude_paths:
+  - .cache/
+  - .github/
+  - molecule/
+  - venv/
+  - '*.vault.yml'
+  - requirements.yml
+
+# Profil de règles (basic, moderate, safety, shared, production)
+profile: production
+
+# Activer/désactiver des règles spécifiques
+skip_list:
+  - yaml[line-length]  # Ignorer les lignes trop longues
+  - role-name         # Ignorer les noms de rôles non conformes
+
+# Avertissements uniquement pour ces règles
+warn_list:
+  - experimental
+  - no-handler
+
+# Liste des tags autorisés
+tags:
+  run:
+    - always
+    - never
+    - tagged
+    - untagged
+    - all
+
+# Configuration pour les variables
+var_naming_pattern: "^[a-z_][a-z0-9_]*$"
+
+# Activer les règles strictes
+strict: true
+
+# Verbosité (1, 2 ou 3)
+verbosity: 1
+
+# Utiliser des couleurs
+use_default_rules: true
+colored: true
+
+# Format de sortie (auto, brief, full, md, json, codeclimate, sarif)
+format: auto
+
+# Configuration YAML lint intégrée
+yaml:
+  line-length:
+    max: 120
+    level: warning
+```
+
+### Règles principales ansible-lint
+
+```yaml
+# Liste des règles importantes
+
+# Syntaxe et formatage
+- command-instead-of-module     # Utiliser les modules au lieu de command
+- command-instead-of-shell      # Utiliser command au lieu de shell quand possible
+- deprecated-module             # Modules dépréciés
+- inline-env-var               # Variables d'env inline
+- key-order                    # Ordre des clés dans les tâches
+- literal-compare              # Comparaisons littérales
+- meta-no-tags                 # Pas de tags dans meta
+- name[casing]                 # Capitalisation des noms
+- name[missing]                # Nom manquant pour les tâches
+- name[play]                   # Nom pour les plays
+- name[template]               # Template dans les noms
+- no-changed-when              # changed_when manquant
+- no-free-form                 # Arguments en forme libre
+- no-handler                   # Handlers non utilisés
+- no-jinja-when                # Jinja dans when
+- no-log-password              # no_log pour les mots de passe
+- no-relative-paths            # Chemins relatifs
+- no-same-owner                # owner identique à l'utilisateur
+- no-tabs                      # Pas de tabulations
+- package-latest               # state: latest
+- risky-file-permissions       # Permissions de fichiers risquées
+- risky-octal                  # Permissions octales risquées
+- risky-shell-pipe             # Pipes dans shell
+- role-name                    # Nom de rôle non conforme
+- run-once[task]               # run_once sans délégation
+- schema                       # Schéma non valide
+- syntax-check                 # Erreurs de syntaxe
+- var-naming                   # Nommage des variables
+- yaml[line-length]            # Longueur des lignes YAML
+- yaml[trailing-spaces]        # Espaces en fin de ligne
+```
+
+### Utilisation d'ansible-lint
+
+```bash
+# Linter tous les fichiers
+ansible-lint
+
+# Linter un fichier spécifique
+ansible-lint playbook.yml
+
+# Linter un rôle
+ansible-lint roles/mon_role
+
+# Mode strict (échec sur avertissements)
+ansible-lint --strict
+
+# Afficher les règles disponibles
+ansible-lint -L
+
+# Afficher les tags disponibles
+ansible-lint -T
+
+# Format JSON
+ansible-lint -f json
+
+# Ignorer des règles pour un fichier spécifique
+ansible-lint --skip-list=yaml[line-length],name[casing] playbook.yml
+
+# Mode offline (pas de mise à jour des règles)
+ansible-lint --offline
+
+# Générer un fichier de configuration
+ansible-lint --generate-ignore
+```
+
+### Skip rules dans les playbooks
+
+```yaml
+---
+# Ignorer une règle pour tout le fichier
+# ansible-lint: skip=yaml[line-length]
+
+- name: Mon playbook
+  hosts: all
+  tasks:
+    # Ignorer une règle pour une tâche
+    - name: Commande avec shell  # noqa: command-instead-of-shell
+      shell: echo "test" | grep test
+
+    - name: Package latest  # noqa: package-latest
+      apt:
+        name: nginx
+        state: latest
+
+    # Ignorer plusieurs règles
+    - name: Tâche complexe  # noqa: risky-shell-pipe command-instead-of-module
+      shell: |
+        cat /etc/passwd | grep user
+      changed_when: false
+```
+
+### Skip rules dans molecule.yml
+
+```yaml
+provisioner:
+  name: ansible
+  lint: |
+    set -e
+    ansible-lint --skip-list=role-name,yaml[line-length]
+```
+
+## yamllint
+
+Linter spécialisé pour les fichiers YAML.
+
+### Installation
+
+```bash
+pip install yamllint
+```
+
+### Configuration .yamllint
+
+Créer `.yamllint` à la racine du projet:
+
+```yaml
+---
+extends: default
+
+ignore: |
+  .cache/
+  .github/
+  venv/
+  molecule/
+  *.vault.yml
+
+rules:
+  # Longueur des lignes
+  line-length:
+    max: 120
+    level: warning
+    allow-non-breakable-inline-mappings: true
+
+  # Indentation
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # Espaces en fin de ligne
+  trailing-spaces:
+    level: error
+
+  # Lignes vides
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 1
+
+  # Commentaires
+  comments:
+    min-spaces-from-content: 1
+    require-starting-space: true
+
+  # Retour à la ligne final
+  new-line-at-end-of-file:
+    level: error
+
+  # Clés dupliquées
+  key-duplicates:
+    level: error
+
+  # Retours à la ligne
+  new-lines:
+    type: unix
+
+  # Crochets
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+
+  # Accolades
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+
+  # Virgules
+  colons:
+    max-spaces-before: 0
+    max-spaces-after: 1
+
+  # Virgules
+  commas:
+    max-spaces-before: 0
+    min-spaces-after: 1
+    max-spaces-after: 1
+
+  # Valeurs truthy (true/false vs yes/no)
+  truthy:
+    allowed-values: ['true', 'false']
+    check-keys: false
+
+  # Documents vides
+  document-start:
+    present: true
+
+  document-end:
+    present: false
+
+  # Valeurs flottantes
+  float-values:
+    forbid-inf: true
+    forbid-nan: true
+
+  # Espaces en trop
+  hyphens:
+    max-spaces-after: 1
+
+  # Longueur des clés
+  key-ordering:
+    level: warning
+
+  # Citations
+  quoted-strings:
+    quote-type: single
+    required: only-when-needed
+    check-keys: false
+```
+
+### Utilisation de yamllint
+
+```bash
+# Linter tous les fichiers YAML
+yamllint .
+
+# Linter un fichier spécifique
+yamllint playbook.yml
+
+# Linter un répertoire
+yamllint roles/
+
+# Format personnalisé
+yamllint -f colored .
+yamllint -f parsable .
+yamllint -f github .
+
+# Mode strict
+yamllint -s .
+
+# Afficher la configuration
+yamllint --print-config .
+```
+
+### Intégration yamllint avec ansible-lint
+
+```yaml
+# Dans .ansible-lint
+---
+# yamllint est automatiquement appelé par ansible-lint
+# Configuration dans .yamllint sera utilisée
+
+# Ou directement dans .ansible-lint
+yaml:
+  line-length:
+    max: 120
+  indentation:
+    spaces: 2
+```
+
+## Check Mode & Diff Mode
+
+### Check Mode (--check)
+
+Le check mode permet de simuler l'exécution sans appliquer les changements.
+
+```bash
+# Exécuter en mode check
+ansible-playbook playbook.yml --check
+
+# Check + diff
+ansible-playbook playbook.yml --check --diff
+
+# Check avec verbosité
+ansible-playbook playbook.yml --check -vv
+```
+
+#### Utilisation dans les playbooks
+
+```yaml
+---
+- name: Playbook avec support check mode
+  hosts: all
+
+  tasks:
+    - name: Tâche normale (supporte check mode)
+      apt:
+        name: nginx
+        state: present
+
+    - name: Tâche qui ignore check mode
+      command: /opt/script.sh
+      check_mode: false  # Exécutée même en check mode
+
+    - name: Tâche uniquement en check mode
+      debug:
+        msg: "Ceci s'affiche uniquement en check mode"
+      check_mode: true
+
+    - name: Tâche conditionnelle basée sur check mode
+      file:
+        path: /tmp/test
+        state: directory
+      when: not ansible_check_mode
+```
+
+#### Variable magique ansible_check_mode
+
+```yaml
+---
+- name: Utiliser ansible_check_mode
+  hosts: all
+
+  tasks:
+    - name: Afficher le mode d'exécution
+      debug:
+        msg: >
+          {% if ansible_check_mode %}
+          Mode CHECK: Simulation uniquement
+          {% else %}
+          Mode NORMAL: Application des changements
+          {% endif %}
+
+    - name: Créer un backup uniquement en mode normal
+      copy:
+        src: /etc/config
+        dest: /etc/config.bak
+        remote_src: true
+      when: not ansible_check_mode
+
+    - name: Commande avec gestion check mode
+      command: systemctl restart nginx
+      when:
+        - not ansible_check_mode
+        - service_changed | default(false)
+```
+
+### Diff Mode (--diff)
+
+Le diff mode affiche les différences avant/après pour les fichiers.
+
+```bash
+# Exécuter avec diff
+ansible-playbook playbook.yml --diff
+
+# Diff sans appliquer (check + diff)
+ansible-playbook playbook.yml --check --diff
+```
+
+#### Configuration du diff
+
+```yaml
+# ansible.cfg
+[defaults]
+# Activer diff par défaut
+diff_always = True
+
+# Nombre de lignes de contexte
+diff_context = 3
+```
+
+#### Diff dans les playbooks
+
+```yaml
+---
+- name: Playbook avec diff
+  hosts: all
+
+  tasks:
+    - name: Template avec diff (par défaut)
+      template:
+        src: config.j2
+        dest: /etc/app/config.yml
+
+    - name: Template sans diff (sensible)
+      template:
+        src: secrets.j2
+        dest: /etc/app/secrets.yml
+      diff: false  # Désactiver le diff pour ce fichier
+      no_log: true  # Masquer aussi les logs
+
+    - name: Copy avec diff
+      copy:
+        content: |
+          server {
+            listen 80;
+            server_name example.com;
+          }
+        dest: /etc/nginx/sites-available/default
+```
+
+### Syntax Check
+
+Vérification de la syntaxe sans exécution.
+
+```bash
+# Vérifier la syntaxe d'un playbook
+ansible-playbook playbook.yml --syntax-check
+
+# Vérifier plusieurs playbooks
+ansible-playbook *.yml --syntax-check
+
+# Avec une inventory spécifique
+ansible-playbook playbook.yml --syntax-check -i inventory/production
+```
+
+## CI/CD avec GitHub Actions
+
+### Pipeline complet .github/workflows/ansible-ci.yml
+
+```yaml
+---
+name: Ansible CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Exécution quotidienne à 2h du matin
+    - cron: '0 2 * * *'
+
+env:
+  ANSIBLE_FORCE_COLOR: '1'
+  PY_COLORS: '1'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible ansible-lint yamllint
+
+      - name: Run yamllint
+        run: yamllint .
+
+      - name: Run ansible-lint
+        run: ansible-lint
+
+      - name: Syntax check
+        run: |
+          ansible-playbook playbooks/*.yml --syntax-check
+
+  test-molecule:
+    name: Molecule Test - ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    needs: lint
+
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - ubuntu2204
+          - ubuntu2004
+          - debian11
+          - debian12
+          - rockylinux8
+          - rockylinux9
+        role:
+          - nginx
+          - docker
+          - postgresql
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install molecule molecule-docker docker
+
+      - name: Run Molecule tests
+        run: |
+          cd roles/${{ matrix.role }}
+          molecule test
+        env:
+          MOLECULE_DISTRO: ${{ matrix.distro }}
+          PY_COLORS: '1'
+          ANSIBLE_FORCE_COLOR: '1'
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: molecule-logs-${{ matrix.role }}-${{ matrix.distro }}
+          path: roles/${{ matrix.role }}/molecule/**/*.log
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: test-molecule
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Run playbook in check mode
+        run: |
+          ansible-playbook playbooks/site.yml \
+            -i inventory/staging \
+            --check \
+            --diff \
+            -vv
+
+      - name: Run integration tests
+        run: |
+          ansible-playbook playbooks/site.yml \
+            -i inventory/staging \
+            --tags "test"
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run ansible-lint security rules
+        run: |
+          pip install ansible-lint
+          ansible-lint --profile=safety
+
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+
+      - name: Check for vulnerable dependencies
+        run: |
+          pip install safety
+          pip freeze | safety check
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [integration-test, security-scan]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.example.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Deploy to staging
+        run: |
+          ansible-playbook playbooks/deploy.yml \
+            -i inventory/staging \
+            -e "ansible_environment=staging" \
+            -e "app_version=${{ github.sha }}"
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [integration-test, security-scan]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://example.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Deploy to production
+        run: |
+          ansible-playbook playbooks/deploy.yml \
+            -i inventory/production \
+            -e "ansible_environment=production" \
+            -e "app_version=${{ github.sha }}" \
+            --check \
+            --diff
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
+
+      - name: Confirm deployment
+        if: success()
+        run: |
+          echo "::notice::Deployment to production successful"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          ansible-playbook playbooks/rollback.yml \
+            -i inventory/production
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always()
+
+    steps:
+      - name: Send Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Ansible CI/CD Pipeline'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+### Workflow pour les rôles spécifiques
+
+```yaml
+# .github/workflows/role-test.yml
+---
+name: Role Test
+
+on:
+  push:
+    paths:
+      - 'roles/**'
+  pull_request:
+    paths:
+      - 'roles/**'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      roles: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            nginx:
+              - 'roles/nginx/**'
+            docker:
+              - 'roles/docker/**'
+            postgresql:
+              - 'roles/postgresql/**'
+
+  test-changed-roles:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.roles != '[]' }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        role: ${{ fromJSON(needs.detect-changes.outputs.roles) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test role ${{ matrix.role }}
+        run: |
+          pip install molecule molecule-docker
+          cd roles/${{ matrix.role }}
+          molecule test
+```
+
+## CI/CD avec GitLab CI
+
+### Pipeline complet .gitlab-ci.yml
+
+```yaml
+---
+stages:
+  - lint
+  - test
+  - security
+  - deploy-staging
+  - deploy-production
+
+variables:
+  ANSIBLE_FORCE_COLOR: "true"
+  PY_COLORS: "1"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+    - venv/
+
+.python-setup: &python-setup
+  image: python:3.11
+  before_script:
+    - python -m venv venv
+    - source venv/bin/activate
+    - pip install --upgrade pip
+    - pip install ansible ansible-lint yamllint
+
+# ============ LINT STAGE ============
+
+yamllint:
+  <<: *python-setup
+  stage: lint
+  script:
+    - yamllint .
+  only:
+    - branches
+    - merge_requests
+
+ansible-lint:
+  <<: *python-setup
+  stage: lint
+  script:
+    - ansible-lint
+  only:
+    - branches
+    - merge_requests
+  artifacts:
+    when: always
+    reports:
+      codequality: ansible-lint-report.json
+
+syntax-check:
+  <<: *python-setup
+  stage: lint
+  script:
+    - ansible-playbook playbooks/*.yml --syntax-check
+  only:
+    - branches
+    - merge_requests
+
+# ============ TEST STAGE ============
+
+.molecule-test: &molecule-test
+  image: docker:latest
+  stage: test
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache python3 py3-pip
+    - pip3 install molecule molecule-docker docker
+  script:
+    - cd roles/$ROLE_NAME
+    - molecule test
+  only:
+    - branches
+    - merge_requests
+
+molecule-nginx:
+  <<: *molecule-test
+  variables:
+    ROLE_NAME: nginx
+  artifacts:
+    when: always
+    paths:
+      - roles/nginx/molecule/**/*.log
+
+molecule-docker:
+  <<: *molecule-test
+  variables:
+    ROLE_NAME: docker
+  artifacts:
+    when: always
+    paths:
+      - roles/docker/molecule/**/*.log
+
+molecule-postgresql:
+  <<: *molecule-test
+  variables:
+    ROLE_NAME: postgresql
+  artifacts:
+    when: always
+    paths:
+      - roles/postgresql/molecule/**/*.log
+
+integration-test:
+  <<: *python-setup
+  stage: test
+  script:
+    - |
+      ansible-playbook playbooks/site.yml \
+        -i inventory/staging \
+        --check \
+        --diff \
+        -vv
+  only:
+    - branches
+    - merge_requests
+
+# ============ SECURITY STAGE ============
+
+security-scan:
+  <<: *python-setup
+  stage: security
+  script:
+    - ansible-lint --profile=safety
+    - pip install safety
+    - pip freeze | safety check --json > safety-report.json || true
+  artifacts:
+    reports:
+      security: safety-report.json
+  only:
+    - branches
+    - merge_requests
+
+secrets-scan:
+  image: trufflesecurity/trufflehog:latest
+  stage: security
+  script:
+    - trufflehog filesystem . --json > trufflehog-report.json
+  artifacts:
+    reports:
+      security: trufflehog-report.json
+  only:
+    - branches
+    - merge_requests
+
+# ============ DEPLOY STAGING ============
+
+deploy-staging:
+  <<: *python-setup
+  stage: deploy-staging
+  environment:
+    name: staging
+    url: https://staging.example.com
+  script:
+    - |
+      ansible-playbook playbooks/deploy.yml \
+        -i inventory/staging \
+        -e "ansible_environment=staging" \
+        -e "app_version=${CI_COMMIT_SHA}" \
+        -e "ansible_vault_password=${VAULT_PASSWORD}"
+  only:
+    - develop
+  when: manual
+
+staging-smoke-test:
+  <<: *python-setup
+  stage: deploy-staging
+  needs: [deploy-staging]
+  script:
+    - |
+      ansible-playbook playbooks/smoke-test.yml \
+        -i inventory/staging
+  only:
+    - develop
+
+# ============ DEPLOY PRODUCTION ============
+
+deploy-production:
+  <<: *python-setup
+  stage: deploy-production
+  environment:
+    name: production
+    url: https://example.com
+  script:
+    - |
+      # Check mode d'abord
+      ansible-playbook playbooks/deploy.yml \
+        -i inventory/production \
+        -e "ansible_environment=production" \
+        -e "app_version=${CI_COMMIT_SHA}" \
+        --check \
+        --diff
+
+      # Déploiement réel
+      ansible-playbook playbooks/deploy.yml \
+        -i inventory/production \
+        -e "ansible_environment=production" \
+        -e "app_version=${CI_COMMIT_SHA}" \
+        -e "ansible_vault_password=${VAULT_PASSWORD}"
+  only:
+    - main
+  when: manual
+  needs:
+    - job: integration-test
+      artifacts: false
+    - job: security-scan
+      artifacts: false
+
+production-smoke-test:
+  <<: *python-setup
+  stage: deploy-production
+  needs: [deploy-production]
+  script:
+    - |
+      ansible-playbook playbooks/smoke-test.yml \
+        -i inventory/production
+  only:
+    - main
+
+rollback-production:
+  <<: *python-setup
+  stage: deploy-production
+  environment:
+    name: production
+    action: rollback
+  script:
+    - |
+      ansible-playbook playbooks/rollback.yml \
+        -i inventory/production \
+        -e "ansible_vault_password=${VAULT_PASSWORD}"
+  when: manual
+  only:
+    - main
+```
+
+## Best Practices de Testing
+
+### 1. Structure de tests
+
+```
+project/
+├── .ansible-lint               # Configuration lint
+├── .yamllint                   # Configuration yamllint
+├── ansible.cfg                 # Configuration Ansible
+├── requirements.txt            # Dépendances Python
+├── roles/
+│   └── mon_role/
+│       ├── molecule/
+│       │   ├── default/        # Scénario par défaut
+│       │   ├── ubuntu/         # Tests Ubuntu
+│       │   └── centos/         # Tests CentOS
+│       ├── tests/
+│       │   ├── test_*.py       # Tests Testinfra
+│       │   └── conftest.py     # Configuration pytest
+│       └── ...
+├── playbooks/
+│   ├── smoke-test.yml          # Tests après déploiement
+│   └── rollback.yml            # Playbook de rollback
+└── tests/
+    ├── integration/            # Tests d'intégration
+    └── fixtures/               # Données de test
+```
+
+### 2. Tests à chaque niveau
+
+```yaml
+# tests/test_pyramid.yml
+---
+# Niveau 1: Tests unitaires (Molecule)
+- Tester chaque rôle isolément
+- Vérifier l'idempotence
+- Tester sur plusieurs distributions
+
+# Niveau 2: Tests d'intégration
+- Tester l'interaction entre rôles
+- Vérifier les dépendances
+- Tester les playbooks complets
+
+# Niveau 3: Tests end-to-end
+- Déploiement complet en staging
+- Tests fonctionnels
+- Tests de performance
+
+# Niveau 4: Smoke tests en production
+- Vérifications post-déploiement
+- Health checks
+- Monitoring
+```
+
+### 3. Playbook de smoke test
+
+```yaml
+---
+# playbooks/smoke-test.yml
+- name: Smoke Tests
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Vérifier la connectivité
+      ping:
+
+    - name: Vérifier les services critiques
+      systemd:
+        name: "{{ item }}"
+        state: started
+      check_mode: true
+      loop:
+        - nginx
+        - postgresql
+        - redis
+      register: services
+      failed_when: services.changed
+
+    - name: Tester les endpoints HTTP
+      uri:
+        url: "{{ item }}"
+        status_code: 200
+        timeout: 10
+      loop:
+        - http://localhost/health
+        - http://localhost/api/status
+
+    - name: Vérifier la base de données
+      postgresql_query:
+        db: app_db
+        query: SELECT 1
+      become_user: postgres
+
+    - name: Vérifier l'espace disque
+      assert:
+        that:
+          - ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first > 1073741824
+        fail_msg: "Espace disque insuffisant (< 1GB)"
+
+    - name: Vérifier la mémoire disponible
+      assert:
+        that:
+          - ansible_memfree_mb > 500
+        fail_msg: "Mémoire insuffisante (< 500MB)"
+```
+
+### 4. Tests de performance
+
+```yaml
+---
+# tests/performance/benchmark.yml
+- name: Performance Tests
+  hosts: webservers
+
+  tasks:
+    - name: Installer Apache Bench
+      apt:
+        name: apache2-utils
+        state: present
+
+    - name: Test de charge HTTP
+      command: >
+        ab -n 1000 -c 10
+        http://localhost/
+      register: benchmark
+
+    - name: Analyser les résultats
+      debug:
+        msg: "{{ benchmark.stdout }}"
+
+    - name: Vérifier le temps de réponse
+      assert:
+        that:
+          - "'Time per request' in benchmark.stdout"
+          - benchmark.stdout | regex_search('Time per request.*mean') | regex_search('[0-9.]+') | float < 100
+        fail_msg: "Temps de réponse trop élevé"
+```
+
+### 5. Stratégie de test complète
+
+```yaml
+---
+# Documentation de la stratégie de test
+
+Niveau 1 - Tests unitaires (Molecule):
+  - Fréquence: À chaque commit
+  - Durée: 5-10 minutes
+  - Couverture: Chaque rôle individuellement
+  - Outils: Molecule, Testinfra
+
+Niveau 2 - Tests d'intégration:
+  - Fréquence: À chaque pull request
+  - Durée: 15-30 minutes
+  - Couverture: Playbooks complets
+  - Outils: Ansible check mode, custom tests
+
+Niveau 3 - Tests de sécurité:
+  - Fréquence: Quotidienne + avant déploiement
+  - Durée: 10-20 minutes
+  - Couverture: Scan des vulnérabilités
+  - Outils: ansible-lint (safety), Trivy, TruffleHog
+
+Niveau 4 - Déploiement staging:
+  - Fréquence: Sur la branche develop
+  - Durée: Variable
+  - Couverture: Environnement complet
+  - Validation: Smoke tests
+
+Niveau 5 - Déploiement production:
+  - Fréquence: Manuel sur main
+  - Durée: Variable
+  - Couverture: Production
+  - Validation: Smoke tests + monitoring
+
+Rollback:
+  - Trigger: Échec des smoke tests
+  - Durée: < 5 minutes
+  - Automatique: En staging
+  - Manuel: En production
+```
+
+### 6. Checklist de qualité
+
+```yaml
+---
+# Checklist avant merge/déploiement
+
+Code Quality:
+  - [ ] yamllint passe sans erreurs
+  - [ ] ansible-lint passe sans erreurs
+  - [ ] Tous les playbooks passent --syntax-check
+  - [ ] Nommage cohérent des tâches
+  - [ ] Documentation à jour
+
+Tests:
+  - [ ] Tests Molecule passent sur toutes les distributions
+  - [ ] Tests d'idempotence réussis
+  - [ ] Tests d'intégration OK
+  - [ ] Smoke tests réussis en staging
+
+Security:
+  - [ ] Pas de secrets en clair
+  - [ ] no_log sur les tâches sensibles
+  - [ ] Scan de sécurité OK
+  - [ ] Permissions de fichiers appropriées
+
+Performance:
+  - [ ] Temps d'exécution acceptable
+  - [ ] Pas de boucles inutiles
+  - [ ] Utilisation de async quand pertinent
+
+Documentation:
+  - [ ] README à jour
+  - [ ] Variables documentées
+  - [ ] Exemples d'utilisation fournis
+  - [ ] CHANGELOG mis à jour
+```
+
+## Ressources
+
+- [Molecule Documentation](https://molecule.readthedocs.io/)
+- [Testinfra Documentation](https://testinfra.readthedocs.io/)
+- [ansible-lint Documentation](https://ansible-lint.readthedocs.io/)
+- [yamllint Documentation](https://yamllint.readthedocs.io/)
+- [GitHub Actions for Ansible](https://github.com/ansible/ansible-lint-action)
+- [GitLab CI/CD Documentation](https://docs.gitlab.com/ee/ci/)

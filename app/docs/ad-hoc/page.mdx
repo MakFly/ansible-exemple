@@ -1,0 +1,577 @@
+# Commandes Ad-hoc
+
+Les commandes ad-hoc Ansible permettent d'exécuter rapidement des tâches ponctuelles sur des hôtes distants sans avoir besoin d'écrire un playbook complet. Elles sont idéales pour des opérations simples, du dépannage ou des vérifications rapides.
+
+## Syntaxe de base
+
+```bash
+ansible <pattern> -m <module> -a <args>
+```
+
+**Composants :**
+- `<pattern>` : Cible les hôtes (all, groupe, nom d'hôte, pattern)
+- `-m <module>` : Spécifie le module Ansible à utiliser
+- `-a <args>` : Arguments passés au module
+
+## Module ping - Test de connectivité
+
+Le module `ansible.builtin.ping` vérifie la connectivité et l'authentification avec les hôtes distants.
+
+```bash
+# Tester tous les hôtes
+ansible all -m ansible.builtin.ping
+
+# Tester un groupe spécifique
+ansible webservers -m ansible.builtin.ping
+
+# Tester un hôte spécifique
+ansible server01 -m ansible.builtin.ping
+
+# Utiliser un fichier d'inventaire spécifique
+ansible all -i inventory.ini -m ansible.builtin.ping
+```
+
+**Réponse réussie :**
+```json
+{
+  "changed": false,
+  "ping": "pong"
+}
+```
+
+## Module command - Exécution de commandes simples
+
+Le module `ansible.builtin.command` exécute des commandes sans passer par le shell (pas de variables d'environnement, pipes, redirections).
+
+```bash
+# Afficher l'uptime
+ansible all -m ansible.builtin.command -a "uptime"
+
+# Lister le contenu d'un répertoire
+ansible webservers -m ansible.builtin.command -a "ls -la /var/www"
+
+# Vérifier la version du système
+ansible all -m ansible.builtin.command -a "cat /etc/os-release"
+
+# Exécuter une commande avec un répertoire de travail spécifique
+ansible all -m ansible.builtin.command -a "pwd" -a "chdir=/tmp"
+```
+
+**Limitations :** Pas de pipes (`|`), redirections (`>`, `<`), variables shell (`$HOME`).
+
+## Module shell - Exécution via le shell
+
+Le module `ansible.builtin.shell` exécute des commandes via `/bin/sh`, permettant l'utilisation de fonctionnalités shell avancées.
+
+```bash
+# Utiliser des pipes
+ansible all -m ansible.builtin.shell -a "ps aux | grep nginx"
+
+# Utiliser des redirections
+ansible all -m ansible.builtin.shell -a "echo 'test' > /tmp/test.txt"
+
+# Utiliser des variables d'environnement
+ansible all -m ansible.builtin.shell -a "echo $HOME"
+
+# Commandes complexes avec plusieurs pipes
+ansible webservers -m ansible.builtin.shell -a "df -h | grep /dev/sda | awk '{print \$5}'"
+
+# Exécuter un script shell inline
+ansible all -m ansible.builtin.shell -a "for i in {1..5}; do echo \$i; done"
+```
+
+**Attention :** Préférez `command` quand possible pour des raisons de sécurité et de performances.
+
+## Module copy - Transfert de fichiers
+
+Le module `ansible.builtin.copy` copie des fichiers depuis la machine de contrôle vers les hôtes distants.
+
+```bash
+# Copier un fichier simple
+ansible all -m ansible.builtin.copy -a "src=/etc/hosts dest=/tmp/hosts"
+
+# Copier avec permissions spécifiques
+ansible webservers -m ansible.builtin.copy -a "src=index.html dest=/var/www/html/index.html mode=0644"
+
+# Copier avec propriétaire et groupe
+ansible all -m ansible.builtin.copy -a "src=app.conf dest=/etc/app/app.conf owner=root group=root mode=0600"
+
+# Créer un fichier avec du contenu inline
+ansible all -m ansible.builtin.copy -a "content='Hello World\n' dest=/tmp/hello.txt"
+
+# Copier avec backup de l'ancien fichier
+ansible all -m ansible.builtin.copy -a "src=config.ini dest=/etc/app/config.ini backup=yes"
+
+# Copier un répertoire complet
+ansible all -m ansible.builtin.copy -a "src=/path/to/dir/ dest=/remote/path/ owner=www-data group=www-data"
+```
+
+## Module file - Gestion de fichiers et répertoires
+
+Le module `ansible.builtin.file` gère les propriétés des fichiers, répertoires, liens symboliques.
+
+```bash
+# Créer un répertoire
+ansible all -m ansible.builtin.file -a "path=/opt/myapp state=directory"
+
+# Créer un répertoire avec permissions
+ansible all -m ansible.builtin.file -a "path=/var/www/data state=directory mode=0755 owner=www-data group=www-data"
+
+# Créer un lien symbolique
+ansible all -m ansible.builtin.file -a "src=/usr/local/bin/app dest=/usr/bin/app state=link"
+
+# Changer les permissions d'un fichier
+ansible all -m ansible.builtin.file -a "path=/etc/app/secret.key mode=0600"
+
+# Changer le propriétaire et groupe
+ansible all -m ansible.builtin.file -a "path=/var/log/app owner=appuser group=appgroup"
+
+# Supprimer un fichier
+ansible all -m ansible.builtin.file -a "path=/tmp/oldfile.txt state=absent"
+
+# Supprimer un répertoire récursivement
+ansible all -m ansible.builtin.file -a "path=/tmp/old_data state=absent"
+
+# Créer un fichier vide (touch)
+ansible all -m ansible.builtin.file -a "path=/tmp/marker.txt state=touch"
+```
+
+**États disponibles :**
+- `file` : Fichier doit exister
+- `directory` : Répertoire doit exister
+- `link` : Lien symbolique
+- `hard` : Lien physique
+- `touch` : Créer un fichier vide ou mettre à jour timestamp
+- `absent` : Supprimer le fichier/répertoire
+
+## Module service - Gestion des services
+
+Le module `ansible.builtin.service` gère les services système (systemd, init.d, etc.).
+
+```bash
+# Démarrer un service
+ansible webservers -m ansible.builtin.service -a "name=nginx state=started"
+
+# Arrêter un service
+ansible webservers -m ansible.builtin.service -a "name=nginx state=stopped"
+
+# Redémarrer un service
+ansible webservers -m ansible.builtin.service -a "name=nginx state=restarted"
+
+# Recharger la configuration d'un service
+ansible webservers -m ansible.builtin.service -a "name=nginx state=reloaded"
+
+# Activer un service au démarrage
+ansible all -m ansible.builtin.service -a "name=nginx enabled=yes"
+
+# Démarrer et activer un service
+ansible webservers -m ansible.builtin.service -a "name=nginx state=started enabled=yes"
+
+# Désactiver un service
+ansible all -m ansible.builtin.service -a "name=apache2 enabled=no"
+
+# Vérifier le statut (avec systemd)
+ansible all -m ansible.builtin.systemd -a "name=nginx state=started"
+```
+
+## Module apt - Gestion de packages (Debian/Ubuntu)
+
+Le module `ansible.builtin.apt` gère les packages sur les systèmes basés sur Debian.
+
+```bash
+# Mettre à jour le cache APT
+ansible all -m ansible.builtin.apt -a "update_cache=yes" --become
+
+# Installer un package
+ansible webservers -m ansible.builtin.apt -a "name=nginx state=present" --become
+
+# Installer une version spécifique
+ansible all -m ansible.builtin.apt -a "name=nginx=1.18.0-0ubuntu1 state=present" --become
+
+# Installer plusieurs packages
+ansible all -m ansible.builtin.apt -a "name=nginx,php-fpm,mysql-server state=present" --become
+
+# Mettre à jour un package
+ansible all -m ansible.builtin.apt -a "name=nginx state=latest" --become
+
+# Désinstaller un package
+ansible all -m ansible.builtin.apt -a "name=apache2 state=absent" --become
+
+# Désinstaller avec purge (supprime aussi les configs)
+ansible all -m ansible.builtin.apt -a "name=apache2 state=absent purge=yes" --become
+
+# Mettre à jour tous les packages
+ansible all -m ansible.builtin.apt -a "upgrade=dist" --become
+
+# Installer et mettre à jour le cache
+ansible all -m ansible.builtin.apt -a "name=nginx state=present update_cache=yes" --become
+```
+
+## Module yum/dnf - Gestion de packages (RedHat/CentOS)
+
+Le module `ansible.builtin.yum` (ou `ansible.builtin.dnf` pour les versions récentes) gère les packages sur les systèmes RedHat.
+
+```bash
+# Installer un package
+ansible all -m ansible.builtin.yum -a "name=nginx state=present" --become
+
+# Installer plusieurs packages
+ansible all -m ansible.builtin.yum -a "name=nginx,php,mariadb-server state=present" --become
+
+# Mettre à jour un package
+ansible all -m ansible.builtin.yum -a "name=nginx state=latest" --become
+
+# Désinstaller un package
+ansible all -m ansible.builtin.yum -a "name=httpd state=absent" --become
+
+# Installer un package depuis une URL
+ansible all -m ansible.builtin.yum -a "name=https://example.com/package.rpm state=present" --become
+
+# Mettre à jour tous les packages
+ansible all -m ansible.builtin.yum -a "name='*' state=latest" --become
+
+# Utiliser dnf (pour Fedora, RHEL 8+)
+ansible all -m ansible.builtin.dnf -a "name=nginx state=present" --become
+```
+
+## Module user - Gestion des utilisateurs
+
+Le module `ansible.builtin.user` gère les comptes utilisateurs.
+
+```bash
+# Créer un utilisateur
+ansible all -m ansible.builtin.user -a "name=john state=present" --become
+
+# Créer un utilisateur avec shell et home
+ansible all -m ansible.builtin.user -a "name=john shell=/bin/bash home=/home/john state=present" --become
+
+# Créer un utilisateur avec UID spécifique
+ansible all -m ansible.builtin.user -a "name=john uid=1500 state=present" --become
+
+# Ajouter un utilisateur à des groupes
+ansible all -m ansible.builtin.user -a "name=john groups=sudo,docker append=yes" --become
+
+# Créer un utilisateur système
+ansible all -m ansible.builtin.user -a "name=appuser system=yes shell=/usr/sbin/nologin" --become
+
+# Définir un mot de passe (hash crypté)
+ansible all -m ansible.builtin.user -a "name=john password='\$6\$saltsalt\$hash...'" --become
+
+# Désactiver un utilisateur (expire le compte)
+ansible all -m ansible.builtin.user -a "name=john expires=0" --become
+
+# Supprimer un utilisateur
+ansible all -m ansible.builtin.user -a "name=john state=absent" --become
+
+# Supprimer un utilisateur et son home
+ansible all -m ansible.builtin.user -a "name=john state=absent remove=yes" --become
+
+# Créer une clé SSH pour un utilisateur
+ansible all -m ansible.builtin.user -a "name=john generate_ssh_key=yes ssh_key_bits=2048" --become
+```
+
+## Module setup - Collecte de facts
+
+Le module `ansible.builtin.setup` collecte les informations système (facts) des hôtes distants.
+
+```bash
+# Collecter tous les facts
+ansible all -m ansible.builtin.setup
+
+# Filtrer les facts par pattern
+ansible all -m ansible.builtin.setup -a "filter=ansible_distribution*"
+
+# Afficher uniquement les informations réseau
+ansible all -m ansible.builtin.setup -a "filter=ansible_default_ipv4"
+
+# Afficher les informations mémoire
+ansible all -m ansible.builtin.setup -a "filter=ansible_memtotal_mb"
+
+# Afficher les informations CPU
+ansible all -m ansible.builtin.setup -a "filter=ansible_processor*"
+
+# Afficher les montages disque
+ansible all -m ansible.builtin.setup -a "filter=ansible_mounts"
+
+# Afficher les interfaces réseau
+ansible all -m ansible.builtin.setup -a "filter=ansible_interfaces"
+
+# Sauvegarder les facts dans un fichier
+ansible all -m ansible.builtin.setup --tree /tmp/facts
+```
+
+**Facts couramment utilisés :**
+- `ansible_distribution` : Distribution (Ubuntu, CentOS, etc.)
+- `ansible_distribution_version` : Version de la distribution
+- `ansible_hostname` : Nom d'hôte
+- `ansible_default_ipv4.address` : Adresse IP principale
+- `ansible_memtotal_mb` : Mémoire totale en Mo
+- `ansible_processor_cores` : Nombre de cœurs CPU
+- `ansible_architecture` : Architecture (x86_64, aarch64, etc.)
+
+## Options communes
+
+### Forks - Parallélisation
+
+L'option `-f` ou `--forks` contrôle le nombre d'hôtes traités en parallèle (défaut : 5).
+
+```bash
+# Traiter 10 hôtes en parallèle
+ansible all -m ansible.builtin.ping -f 10
+
+# Traiter 50 hôtes en parallèle (pour de gros inventaires)
+ansible all -m ansible.builtin.command -a "uptime" --forks=50
+
+# Traiter un hôte à la fois (séquentiel)
+ansible all -m ansible.builtin.shell -a "long_running_task.sh" -f 1
+```
+
+### Élévation de privilèges (Become)
+
+Les options `--become`, `--become-user`, et `-K` gèrent l'élévation de privilèges (sudo).
+
+```bash
+# Devenir root (sudo)
+ansible all -m ansible.builtin.apt -a "name=nginx state=present" --become
+
+# Devenir un utilisateur spécifique
+ansible all -m ansible.builtin.command -a "whoami" --become --become-user=postgres
+
+# Demander le mot de passe sudo
+ansible all -m ansible.builtin.apt -a "name=nginx state=present" --become -K
+
+# Spécifier la méthode d'élévation
+ansible all -m ansible.builtin.command -a "whoami" --become --become-method=su
+
+# Devenir root avec mot de passe sudo
+ansible webservers -m ansible.builtin.service -a "name=nginx state=restarted" --become --become-user=root -K
+```
+
+**Options become :**
+- `--become` ou `-b` : Activer l'élévation de privilèges
+- `--become-user` : Utilisateur cible (défaut : root)
+- `--become-method` : Méthode (sudo, su, pbrun, etc.)
+- `-K` ou `--ask-become-pass` : Demander le mot de passe sudo
+
+### Options d'authentification
+
+```bash
+# Spécifier l'utilisateur SSH
+ansible all -m ansible.builtin.ping -u admin
+
+# Demander le mot de passe SSH
+ansible all -m ansible.builtin.ping -k
+
+# Utiliser une clé SSH spécifique
+ansible all -m ansible.builtin.ping --private-key=/path/to/key.pem
+
+# Spécifier le port SSH
+ansible all -m ansible.builtin.ping -e ansible_port=2222
+```
+
+### Options de verbosité
+
+```bash
+# Verbosité normale
+ansible all -m ansible.builtin.ping -v
+
+# Plus de détails
+ansible all -m ansible.builtin.ping -vv
+
+# Encore plus de détails (debug)
+ansible all -m ansible.builtin.ping -vvv
+
+# Verbosité maximale (debug connexions SSH)
+ansible all -m ansible.builtin.ping -vvvv
+```
+
+## Exemples pratiques complets
+
+### Déploiement rapide d'un site web
+
+```bash
+# 1. Installer Nginx
+ansible webservers -m ansible.builtin.apt -a "name=nginx state=present update_cache=yes" --become
+
+# 2. Démarrer et activer Nginx
+ansible webservers -m ansible.builtin.service -a "name=nginx state=started enabled=yes" --become
+
+# 3. Copier la page index.html
+ansible webservers -m ansible.builtin.copy -a "src=./index.html dest=/var/www/html/index.html mode=0644" --become
+
+# 4. Redémarrer Nginx pour appliquer les changements
+ansible webservers -m ansible.builtin.service -a "name=nginx state=restarted" --become
+```
+
+### Gestion des utilisateurs sur plusieurs serveurs
+
+```bash
+# 1. Créer un groupe admin
+ansible all -m ansible.builtin.group -a "name=admins state=present" --become
+
+# 2. Créer un utilisateur dans le groupe
+ansible all -m ansible.builtin.user -a "name=deploy shell=/bin/bash groups=admins,sudo append=yes" --become
+
+# 3. Créer le répertoire .ssh
+ansible all -m ansible.builtin.file -a "path=/home/deploy/.ssh state=directory mode=0700 owner=deploy" --become
+
+# 4. Ajouter une clé SSH
+ansible all -m ansible.builtin.copy -a "content='ssh-rsa AAAA...' dest=/home/deploy/.ssh/authorized_keys mode=0600 owner=deploy" --become
+```
+
+### Collecte d'informations système
+
+```bash
+# Vérifier l'espace disque sur tous les serveurs
+ansible all -m ansible.builtin.shell -a "df -h"
+
+# Vérifier la mémoire disponible
+ansible all -m ansible.builtin.shell -a "free -m"
+
+# Lister les services actifs
+ansible all -m ansible.builtin.shell -a "systemctl list-units --type=service --state=running" --become
+
+# Vérifier les dernières connexions
+ansible all -m ansible.builtin.command -a "last -n 10" --become
+
+# Collecter les informations réseau
+ansible all -m ansible.builtin.setup -a "filter=ansible_all_ipv4_addresses"
+```
+
+### Maintenance et nettoyage
+
+```bash
+# Nettoyer le cache APT
+ansible all -m ansible.builtin.apt -a "autoclean=yes" --become
+
+# Supprimer les packages inutiles
+ansible all -m ansible.builtin.apt -a "autoremove=yes" --become
+
+# Nettoyer les logs anciens
+ansible all -m ansible.builtin.shell -a "find /var/log -name '*.log' -mtime +30 -delete" --become
+
+# Vider le cache système
+ansible all -m ansible.builtin.shell -a "sync; echo 3 > /proc/sys/vm/drop_caches" --become
+```
+
+### Vérifications de sécurité
+
+```bash
+# Vérifier les mises à jour de sécurité disponibles (Ubuntu)
+ansible all -m ansible.builtin.shell -a "apt list --upgradable 2>/dev/null | grep -i security" --become
+
+# Vérifier les ports en écoute
+ansible all -m ansible.builtin.shell -a "ss -tuln"
+
+# Lister les utilisateurs avec shell de login
+ansible all -m ansible.builtin.shell -a "grep -E '/bin/(ba)?sh' /etc/passwd"
+
+# Vérifier les dernières modifications de fichiers système
+ansible all -m ansible.builtin.shell -a "find /etc -type f -mtime -7" --become
+```
+
+### Gestion de configurations
+
+```bash
+# Sauvegarder un fichier de configuration
+ansible webservers -m ansible.builtin.fetch -a "src=/etc/nginx/nginx.conf dest=/backup/ flat=yes"
+
+# Déployer une configuration depuis un template
+ansible webservers -m ansible.builtin.copy -a "src=nginx.conf dest=/etc/nginx/nginx.conf backup=yes" --become
+
+# Valider la configuration Nginx
+ansible webservers -m ansible.builtin.command -a "nginx -t" --become
+
+# Recharger Nginx si la validation réussit
+ansible webservers -m ansible.builtin.service -a "name=nginx state=reloaded" --become
+```
+
+### Surveillance en temps réel
+
+```bash
+# Surveiller la charge CPU
+ansible all -m ansible.builtin.shell -a "top -bn1 | head -20"
+
+# Surveiller les processus consommant le plus de mémoire
+ansible all -m ansible.builtin.shell -a "ps aux --sort=-%mem | head -10"
+
+# Vérifier les connexions réseau actives
+ansible all -m ansible.builtin.shell -a "netstat -tupan | grep ESTABLISHED"
+
+# Surveiller les erreurs dans les logs
+ansible webservers -m ansible.builtin.shell -a "tail -100 /var/log/nginx/error.log" --become
+```
+
+## Bonnes pratiques
+
+### 1. Utilisez check mode pour tester
+
+```bash
+# Tester sans appliquer les changements
+ansible all -m ansible.builtin.apt -a "name=nginx state=present" --check --become
+```
+
+### 2. Limitez la cible avec --limit
+
+```bash
+# Exécuter uniquement sur certains hôtes
+ansible all -m ansible.builtin.ping --limit "web01,web02"
+
+# Exclure certains hôtes
+ansible all -m ansible.builtin.ping --limit "!web03"
+```
+
+### 3. Utilisez des variables en ligne
+
+```bash
+# Passer des variables extra
+ansible webservers -m ansible.builtin.template -a "src=app.conf.j2 dest=/etc/app/app.conf" -e "app_port=8080"
+```
+
+### 4. Sauvegardez avant de modifier
+
+```bash
+# Toujours utiliser backup=yes pour les fichiers critiques
+ansible all -m ansible.builtin.copy -a "src=new_config dest=/etc/app/config backup=yes" --become
+```
+
+### 5. Documentez vos commandes
+
+```bash
+# Utilisez des commentaires dans vos scripts shell
+# pour documenter les commandes ad-hoc complexes
+```
+
+## Limites des commandes ad-hoc
+
+Les commandes ad-hoc sont pratiques mais ont des limitations :
+
+- **Pas de gestion d'état complexe** : Pour des workflows multi-étapes, utilisez des playbooks
+- **Pas de conditionnels** : Pas de logique if/when
+- **Pas de boucles** : Impossible d'itérer sur des listes
+- **Pas de gestion d'erreurs** : Pas de handlers ou de blocs rescue
+- **Pas de réutilisabilité** : Pas de rôles ou d'includes
+
+**Quand utiliser les playbooks :**
+- Orchestration multi-étapes
+- Gestion d'état complexe
+- Réutilisabilité et maintenance
+- Gestion d'erreurs avancée
+- Documentation et versioning
+
+## Résumé des modules essentiels
+
+| Module | Usage principal | Exemple |
+|--------|----------------|---------|
+| `ansible.builtin.ping` | Test de connectivité | `ansible all -m ansible.builtin.ping` |
+| `ansible.builtin.command` | Commandes simples | `ansible all -m ansible.builtin.command -a "uptime"` |
+| `ansible.builtin.shell` | Commandes shell avancées | `ansible all -m ansible.builtin.shell -a "ps aux \| grep nginx"` |
+| `ansible.builtin.copy` | Transfert de fichiers | `ansible all -m ansible.builtin.copy -a "src=file dest=/tmp/file"` |
+| `ansible.builtin.file` | Gestion fichiers/répertoires | `ansible all -m ansible.builtin.file -a "path=/tmp/dir state=directory"` |
+| `ansible.builtin.service` | Gestion de services | `ansible all -m ansible.builtin.service -a "name=nginx state=started"` |
+| `ansible.builtin.apt` | Packages Debian/Ubuntu | `ansible all -m ansible.builtin.apt -a "name=nginx state=present" --become` |
+| `ansible.builtin.yum` | Packages RedHat/CentOS | `ansible all -m ansible.builtin.yum -a "name=nginx state=present" --become` |
+| `ansible.builtin.user` | Gestion des utilisateurs | `ansible all -m ansible.builtin.user -a "name=john state=present" --become` |
+| `ansible.builtin.setup` | Collecte de facts | `ansible all -m ansible.builtin.setup` |
+
+Les commandes ad-hoc sont un outil puissant pour l'administration système rapide et le dépannage, mais pour des tâches complexes et répétables, les playbooks restent la meilleure approche.

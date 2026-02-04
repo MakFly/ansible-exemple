@@ -1,0 +1,1461 @@
+# Playbooks
+
+Les playbooks sont le cœur d'Ansible. Ce sont des fichiers YAML qui définissent une série de tâches à exécuter sur des hôtes ciblés. Ils permettent d'orchestrer des déploiements complexes, de gérer la configuration et d'automatiser des processus complets.
+
+## Structure YAML d'un playbook
+
+Un playbook contient un ou plusieurs **plays**. Chaque play cible un groupe d'hôtes et définit des tâches à exécuter.
+
+### Structure de base
+
+```yaml
+---
+# Ceci est un playbook avec un seul play
+- name: Configuration des serveurs web
+  hosts: webservers
+  become: yes
+  vars:
+    http_port: 80
+    max_clients: 200
+
+  tasks:
+    - name: Installer Apache
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+
+    - name: Démarrer le service Apache
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: yes
+```
+
+### Anatomy d'un play
+
+Un play est composé de plusieurs sections :
+
+```yaml
+- name: Nom descriptif du play
+  hosts: groupe_cible              # Groupe d'hôtes depuis l'inventaire
+  become: yes                      # Élévation de privilèges (sudo)
+  become_user: root                # Utilisateur pour l'élévation
+  gather_facts: yes                # Collecte des facts (par défaut: yes)
+  vars:                            # Variables du play
+    var1: valeur1
+  vars_files:                      # Fichiers de variables externes
+    - vars/external.yml
+
+  pre_tasks:                       # Tâches exécutées en premier
+    - name: Tâche préliminaire
+      # ...
+
+  roles:                           # Rôles à appliquer
+    - role_name
+
+  tasks:                           # Tâches principales
+    - name: Tâche principale
+      # ...
+
+  post_tasks:                      # Tâches exécutées en dernier
+    - name: Tâche finale
+      # ...
+
+  handlers:                        # Gestionnaires d'événements
+    - name: Handler
+      # ...
+```
+
+### Playbook multi-plays
+
+Un playbook peut contenir plusieurs plays pour orchestrer des opérations complexes :
+
+```yaml
+---
+- name: Configuration de la base de données
+  hosts: dbservers
+  become: yes
+
+  tasks:
+    - name: Installer PostgreSQL
+      ansible.builtin.apt:
+        name: postgresql
+        state: present
+
+- name: Configuration des serveurs web
+  hosts: webservers
+  become: yes
+
+  tasks:
+    - name: Installer Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+
+- name: Configuration du load balancer
+  hosts: loadbalancers
+  become: yes
+
+  tasks:
+    - name: Installer HAProxy
+      ansible.builtin.apt:
+        name: haproxy
+        state: present
+```
+
+## Modules essentiels
+
+### ansible.builtin.copy
+
+Copie des fichiers depuis la machine de contrôle vers les hôtes cibles.
+
+```yaml
+tasks:
+  # Copie simple
+  - name: Copier un fichier de configuration
+    ansible.builtin.copy:
+      src: /local/path/config.conf
+      dest: /etc/myapp/config.conf
+      owner: root
+      group: root
+      mode: '0644'
+
+  # Copie avec backup
+  - name: Copier avec sauvegarde
+    ansible.builtin.copy:
+      src: files/nginx.conf
+      dest: /etc/nginx/nginx.conf
+      backup: yes
+      validate: 'nginx -t -c %s'
+
+  # Création de contenu en ligne
+  - name: Créer un fichier avec du contenu
+    ansible.builtin.copy:
+      content: |
+        [database]
+        host=localhost
+        port=5432
+      dest: /etc/myapp/db.conf
+      mode: '0600'
+
+  # Copie récursive
+  - name: Copier un répertoire complet
+    ansible.builtin.copy:
+      src: files/website/
+      dest: /var/www/html/
+      owner: www-data
+      group: www-data
+      mode: '0755'
+      directory_mode: '0755'
+```
+
+### ansible.builtin.template
+
+Génère des fichiers depuis des templates Jinja2 avec substitution de variables.
+
+```yaml
+tasks:
+  # Template simple
+  - name: Générer un fichier de configuration
+    ansible.builtin.template:
+      src: templates/app.conf.j2
+      dest: /etc/myapp/app.conf
+      owner: root
+      group: root
+      mode: '0644'
+
+  # Template avec validation
+  - name: Configurer Nginx depuis template
+    ansible.builtin.template:
+      src: nginx.conf.j2
+      dest: /etc/nginx/nginx.conf
+      validate: 'nginx -t -c %s'
+      backup: yes
+    notify: Redémarrer Nginx
+
+  # Template avec variables
+  - name: Générer vhost Apache
+    ansible.builtin.template:
+      src: vhost.conf.j2
+      dest: "/etc/apache2/sites-available/{{ domain }}.conf"
+      owner: root
+      group: root
+      mode: '0644'
+    vars:
+      domain: example.com
+      document_root: /var/www/example
+```
+
+**Exemple de template** (`templates/app.conf.j2`) :
+
+```jinja
+# Configuration générée par Ansible
+server_name={{ ansible_hostname }}
+listen_port={{ http_port | default(80) }}
+
+{% if enable_ssl %}
+ssl_certificate=/etc/ssl/certs/{{ domain }}.crt
+ssl_certificate_key=/etc/ssl/private/{{ domain }}.key
+{% endif %}
+
+{% for backend in backends %}
+upstream backend_{{ loop.index }} {
+    server {{ backend.host }}:{{ backend.port }};
+}
+{% endfor %}
+```
+
+### ansible.builtin.file
+
+Gère les fichiers, répertoires, liens symboliques et leurs attributs.
+
+```yaml
+tasks:
+  # Créer un répertoire
+  - name: Créer le répertoire de logs
+    ansible.builtin.file:
+      path: /var/log/myapp
+      state: directory
+      owner: appuser
+      group: appgroup
+      mode: '0755'
+
+  # Créer une hiérarchie de répertoires
+  - name: Créer une arborescence
+    ansible.builtin.file:
+      path: /opt/myapp/data/cache
+      state: directory
+      mode: '0750'
+      recurse: yes
+
+  # Créer un lien symbolique
+  - name: Lien vers la version active
+    ansible.builtin.file:
+      src: /opt/myapp/releases/v2.1.0
+      dest: /opt/myapp/current
+      state: link
+      force: yes
+
+  # Supprimer un fichier
+  - name: Supprimer un fichier temporaire
+    ansible.builtin.file:
+      path: /tmp/old_file.txt
+      state: absent
+
+  # Modifier les permissions
+  - name: Sécuriser un fichier sensible
+    ansible.builtin.file:
+      path: /etc/myapp/secrets.conf
+      owner: root
+      group: root
+      mode: '0600'
+
+  # Créer un fichier vide (touch)
+  - name: Créer un fichier de lock
+    ansible.builtin.file:
+      path: /var/run/myapp.lock
+      state: touch
+      mode: '0644'
+```
+
+### ansible.builtin.service
+
+Gère les services système (systemd, init.d, etc.).
+
+```yaml
+tasks:
+  # Démarrer un service
+  - name: Démarrer Apache
+    ansible.builtin.service:
+      name: apache2
+      state: started
+
+  # Activer au démarrage
+  - name: Activer Nginx au boot
+    ansible.builtin.service:
+      name: nginx
+      enabled: yes
+
+  # Redémarrer un service
+  - name: Redémarrer PostgreSQL
+    ansible.builtin.service:
+      name: postgresql
+      state: restarted
+
+  # Recharger la configuration
+  - name: Recharger Nginx
+    ansible.builtin.service:
+      name: nginx
+      state: reloaded
+
+  # Arrêter et désactiver
+  - name: Désactiver un service inutilisé
+    ansible.builtin.service:
+      name: bluetooth
+      state: stopped
+      enabled: no
+
+  # Service avec pattern (pour les services sans fichier unit)
+  - name: Gérer un service custom
+    ansible.builtin.service:
+      name: myapp
+      state: started
+      pattern: /usr/bin/myapp
+```
+
+### ansible.builtin.apt et ansible.builtin.yum
+
+Gestion des paquets pour Debian/Ubuntu (apt) et RedHat/CentOS (yum/dnf).
+
+#### ansible.builtin.apt (Debian/Ubuntu)
+
+```yaml
+tasks:
+  # Installer un paquet
+  - name: Installer Nginx
+    ansible.builtin.apt:
+      name: nginx
+      state: present
+      update_cache: yes
+
+  # Installer plusieurs paquets
+  - name: Installer stack LAMP
+    ansible.builtin.apt:
+      name:
+        - apache2
+        - mysql-server
+        - php
+        - php-mysql
+      state: present
+
+  # Installer une version spécifique
+  - name: Installer Docker version précise
+    ansible.builtin.apt:
+      name: docker-ce=5:20.10.7~3-0~ubuntu-focal
+      state: present
+
+  # Mettre à jour tous les paquets
+  - name: Mise à jour système
+    ansible.builtin.apt:
+      upgrade: dist
+      update_cache: yes
+      cache_valid_time: 3600
+
+  # Supprimer un paquet
+  - name: Désinstaller Apache
+    ansible.builtin.apt:
+      name: apache2
+      state: absent
+      purge: yes
+      autoremove: yes
+
+  # Installer depuis un fichier .deb
+  - name: Installer depuis .deb
+    ansible.builtin.apt:
+      deb: /tmp/package.deb
+
+  # Ajouter un repository
+  - name: Ajouter un PPA
+    ansible.builtin.apt_repository:
+      repo: ppa:nginx/stable
+      state: present
+
+  # Ajouter une clé GPG
+  - name: Ajouter la clé Docker
+    ansible.builtin.apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+```
+
+#### ansible.builtin.yum (RedHat/CentOS)
+
+```yaml
+tasks:
+  # Installer un paquet
+  - name: Installer Nginx
+    ansible.builtin.yum:
+      name: nginx
+      state: present
+
+  # Installer plusieurs paquets
+  - name: Installer outils de développement
+    ansible.builtin.yum:
+      name:
+        - gcc
+        - make
+        - git
+        - vim
+      state: present
+
+  # Installer depuis un repository spécifique
+  - name: Installer depuis EPEL
+    ansible.builtin.yum:
+      name: htop
+      state: present
+      enablerepo: epel
+
+  # Mettre à jour tous les paquets
+  - name: Mise à jour complète
+    ansible.builtin.yum:
+      name: '*'
+      state: latest
+      update_cache: yes
+
+  # Supprimer un paquet
+  - name: Désinstaller Apache
+    ansible.builtin.yum:
+      name: httpd
+      state: absent
+
+  # Installer un groupe de paquets
+  - name: Installer groupe Development Tools
+    ansible.builtin.yum:
+      name: "@Development Tools"
+      state: present
+```
+
+### ansible.builtin.user
+
+Gère les comptes utilisateurs.
+
+```yaml
+tasks:
+  # Créer un utilisateur
+  - name: Créer l'utilisateur deploy
+    ansible.builtin.user:
+      name: deploy
+      comment: "Deployment User"
+      uid: 1500
+      group: deploy
+      shell: /bin/bash
+      home: /home/deploy
+      create_home: yes
+
+  # Utilisateur avec clé SSH
+  - name: Créer utilisateur avec clé publique
+    ansible.builtin.user:
+      name: appuser
+      state: present
+      groups:
+        - docker
+        - www-data
+      append: yes
+      generate_ssh_key: yes
+      ssh_key_bits: 4096
+      ssh_key_file: .ssh/id_rsa
+
+  # Ajouter une clé SSH existante
+  - name: Ajouter clé SSH autorisée
+    ansible.builtin.authorized_key:
+      user: deploy
+      state: present
+      key: "{{ lookup('file', '/local/path/id_rsa.pub') }}"
+
+  # Utilisateur système (sans home)
+  - name: Créer utilisateur système
+    ansible.builtin.user:
+      name: nginx
+      system: yes
+      shell: /usr/sbin/nologin
+      create_home: no
+
+  # Modifier un utilisateur existant
+  - name: Ajouter l'utilisateur au groupe sudo
+    ansible.builtin.user:
+      name: john
+      groups: sudo
+      append: yes
+
+  # Définir un mot de passe
+  - name: Définir le mot de passe
+    ansible.builtin.user:
+      name: john
+      password: "{{ 'mypassword' | password_hash('sha512') }}"
+      update_password: on_create
+
+  # Supprimer un utilisateur
+  - name: Supprimer un utilisateur
+    ansible.builtin.user:
+      name: olduser
+      state: absent
+      remove: yes
+      force: yes
+```
+
+### ansible.builtin.lineinfile
+
+Modifie des lignes spécifiques dans des fichiers texte.
+
+```yaml
+tasks:
+  # Ajouter ou modifier une ligne
+  - name: Configurer le hostname
+    ansible.builtin.lineinfile:
+      path: /etc/hosts
+      line: "192.168.1.100 server.example.com server"
+      state: present
+
+  # Modifier avec regex
+  - name: Changer le port SSH
+    ansible.builtin.lineinfile:
+      path: /etc/ssh/sshd_config
+      regexp: '^#?Port '
+      line: "Port 2222"
+      backup: yes
+    notify: Redémarrer SSH
+
+  # Ajouter après une ligne spécifique
+  - name: Ajouter une configuration
+    ansible.builtin.lineinfile:
+      path: /etc/php/8.1/apache2/php.ini
+      insertafter: '^\[PHP\]'
+      line: "memory_limit = 256M"
+
+  # Ajouter au début du fichier
+  - name: Ajouter un header
+    ansible.builtin.lineinfile:
+      path: /etc/profile
+      line: "# Managed by Ansible"
+      insertbefore: BOF
+
+  # Supprimer une ligne
+  - name: Désactiver IPv6
+    ansible.builtin.lineinfile:
+      path: /etc/sysctl.conf
+      regexp: '^net.ipv6.conf.all.disable_ipv6'
+      state: absent
+
+  # Modifier avec backreferences
+  - name: Modifier une valeur existante
+    ansible.builtin.lineinfile:
+      path: /etc/security/limits.conf
+      regexp: '^(\* +soft +nofile) +\d+'
+      line: '\1 65536'
+      backrefs: yes
+
+  # Créer le fichier s'il n'existe pas
+  - name: Configurer variable d'environnement
+    ansible.builtin.lineinfile:
+      path: /etc/environment
+      line: "JAVA_HOME=/usr/lib/jvm/java-11-openjdk"
+      create: yes
+      mode: '0644'
+```
+
+## Handlers et notify
+
+Les handlers sont des tâches spéciales qui ne s'exécutent que lorsqu'elles sont notifiées par d'autres tâches. Ils sont typiquement utilisés pour redémarrer des services après modification de configuration.
+
+### Définition et utilisation basique
+
+```yaml
+---
+- name: Configuration du serveur web
+  hosts: webservers
+  become: yes
+
+  tasks:
+    - name: Installer Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+
+    - name: Copier la configuration Nginx
+      ansible.builtin.copy:
+        src: files/nginx.conf
+        dest: /etc/nginx/nginx.conf
+      notify: Redémarrer Nginx
+
+    - name: Copier le vhost
+      ansible.builtin.template:
+        src: vhost.conf.j2
+        dest: /etc/nginx/sites-available/default
+      notify:
+        - Tester la configuration Nginx
+        - Recharger Nginx
+
+  handlers:
+    - name: Redémarrer Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+    - name: Recharger Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Tester la configuration Nginx
+      ansible.builtin.command:
+        cmd: nginx -t
+```
+
+### Caractéristiques des handlers
+
+1. **Exécution unique** : Un handler n'est exécuté qu'une seule fois, même s'il est notifié plusieurs fois
+2. **Exécution en fin de play** : Par défaut, les handlers s'exécutent après toutes les tâches
+3. **Ordre d'exécution** : Les handlers s'exécutent dans l'ordre où ils sont définis, pas dans l'ordre des notifications
+
+### Chaînage de handlers
+
+Un handler peut notifier un autre handler :
+
+```yaml
+handlers:
+  - name: Recharger systemd
+    ansible.builtin.systemd:
+      daemon_reload: yes
+    notify: Redémarrer application
+
+  - name: Redémarrer application
+    ansible.builtin.service:
+      name: myapp
+      state: restarted
+    notify: Vérifier le statut
+
+  - name: Vérifier le statut
+    ansible.builtin.uri:
+      url: http://localhost:8080/health
+      status_code: 200
+```
+
+### Flush handlers
+
+Pour forcer l'exécution des handlers à un moment précis :
+
+```yaml
+tasks:
+  - name: Modifier la configuration
+    ansible.builtin.template:
+      src: config.j2
+      dest: /etc/myapp/config.yml
+    notify: Redémarrer myapp
+
+  # Forcer l'exécution du handler maintenant
+  - name: Exécuter les handlers immédiatement
+    ansible.builtin.meta: flush_handlers
+
+  - name: Vérifier que l'application répond
+    ansible.builtin.uri:
+      url: http://localhost:8080/health
+      status_code: 200
+```
+
+### Handlers avec conditions
+
+```yaml
+handlers:
+  - name: Redémarrer Apache
+    ansible.builtin.service:
+      name: apache2
+      state: restarted
+    when: ansible_os_family == "Debian"
+
+  - name: Redémarrer httpd
+    ansible.builtin.service:
+      name: httpd
+      state: restarted
+    when: ansible_os_family == "RedHat"
+```
+
+### Handlers listen
+
+Plusieurs handlers peuvent écouter le même événement :
+
+```yaml
+tasks:
+  - name: Modifier la configuration réseau
+    ansible.builtin.copy:
+      src: network.conf
+      dest: /etc/network.conf
+    notify: "configuration réseau modifiée"
+
+handlers:
+  - name: Redémarrer NetworkManager
+    ansible.builtin.service:
+      name: NetworkManager
+      state: restarted
+    listen: "configuration réseau modifiée"
+
+  - name: Nettoyer le cache DNS
+    ansible.builtin.command:
+      cmd: systemd-resolve --flush-caches
+    listen: "configuration réseau modifiée"
+
+  - name: Notifier le monitoring
+    ansible.builtin.uri:
+      url: https://monitoring.example.com/api/events
+      method: POST
+      body_format: json
+      body:
+        event: "network_config_changed"
+    listen: "configuration réseau modifiée"
+```
+
+## Tags
+
+Les tags permettent de n'exécuter qu'une partie spécifique d'un playbook.
+
+### Tags sur les tâches
+
+```yaml
+tasks:
+  - name: Installer les paquets
+    ansible.builtin.apt:
+      name: nginx
+      state: present
+    tags:
+      - install
+      - packages
+
+  - name: Configurer Nginx
+    ansible.builtin.template:
+      src: nginx.conf.j2
+      dest: /etc/nginx/nginx.conf
+    tags:
+      - configuration
+      - nginx
+
+  - name: Démarrer le service
+    ansible.builtin.service:
+      name: nginx
+      state: started
+    tags:
+      - service
+      - startup
+```
+
+### Tags sur les plays
+
+```yaml
+- name: Configuration de la base de données
+  hosts: dbservers
+  tags:
+    - database
+    - db
+
+  tasks:
+    - name: Installer PostgreSQL
+      ansible.builtin.apt:
+        name: postgresql
+        state: present
+
+- name: Configuration des serveurs web
+  hosts: webservers
+  tags:
+    - webserver
+    - web
+
+  tasks:
+    - name: Installer Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+```
+
+### Tags sur les blocks
+
+```yaml
+tasks:
+  - name: Configuration SSL
+    tags:
+      - ssl
+      - security
+    block:
+      - name: Créer le répertoire SSL
+        ansible.builtin.file:
+          path: /etc/ssl/private
+          state: directory
+          mode: '0700'
+
+      - name: Copier les certificats
+        ansible.builtin.copy:
+          src: "{{ item }}"
+          dest: /etc/ssl/private/
+        loop:
+          - ssl.crt
+          - ssl.key
+```
+
+### Tags spéciaux
+
+```yaml
+tasks:
+  # Toujours exécuté (sauf avec --skip-tags always)
+  - name: Vérifier les prérequis
+    ansible.builtin.command:
+      cmd: which python3
+    tags: always
+
+  # Jamais exécuté (sauf avec --tags never)
+  - name: Tâche de debug
+    ansible.builtin.debug:
+      msg: "Mode debug activé"
+    tags: never
+
+  # Tag tagged exécute toutes les tâches qui ont au moins un tag
+  # Tag untagged exécute toutes les tâches sans tag
+  # Tag all exécute toutes les tâches (comportement par défaut)
+```
+
+### Utilisation en ligne de commande
+
+```bash
+# Exécuter uniquement les tâches avec le tag "install"
+ansible-playbook playbook.yml --tags install
+
+# Exécuter plusieurs tags
+ansible-playbook playbook.yml --tags "install,configuration"
+
+# Exclure certains tags
+ansible-playbook playbook.yml --skip-tags "tests,debug"
+
+# Combiner tags et skip-tags
+ansible-playbook playbook.yml --tags install --skip-tags database
+
+# Lister tous les tags disponibles
+ansible-playbook playbook.yml --list-tags
+
+# Lister les tâches qui seraient exécutées avec un tag
+ansible-playbook playbook.yml --tags install --list-tasks
+```
+
+### Exemple complet avec tags
+
+```yaml
+---
+- name: Déploiement complet d'une application
+  hosts: appservers
+  become: yes
+  tags:
+    - deployment
+
+  tasks:
+    - name: Vérifier la version Python
+      ansible.builtin.command:
+        cmd: python3 --version
+      tags: always
+
+    - name: Installer les dépendances système
+      ansible.builtin.apt:
+        name:
+          - python3-pip
+          - virtualenv
+          - git
+        state: present
+      tags:
+        - install
+        - dependencies
+
+    - name: Cloner le repository
+      ansible.builtin.git:
+        repo: https://github.com/example/app.git
+        dest: /opt/app
+        version: main
+      tags:
+        - code
+        - update
+
+    - name: Installer les dépendances Python
+      ansible.builtin.pip:
+        requirements: /opt/app/requirements.txt
+        virtualenv: /opt/app/venv
+      tags:
+        - install
+        - dependencies
+
+    - name: Configurer l'application
+      ansible.builtin.template:
+        src: app.conf.j2
+        dest: /opt/app/config.yml
+      tags:
+        - configuration
+        - config
+      notify: Redémarrer l'application
+
+    - name: Lancer les tests
+      ansible.builtin.command:
+        cmd: /opt/app/venv/bin/pytest
+        chdir: /opt/app
+      tags:
+        - tests
+        - never
+
+    - name: Démarrer le service
+      ansible.builtin.service:
+        name: myapp
+        state: started
+        enabled: yes
+      tags:
+        - service
+        - startup
+
+  handlers:
+    - name: Redémarrer l'application
+      ansible.builtin.service:
+        name: myapp
+        state: restarted
+```
+
+## Pre_tasks, post_tasks et roles
+
+Ansible permet d'organiser l'exécution dans un ordre précis : pre_tasks → roles → tasks → post_tasks.
+
+### Structure complète d'un play
+
+```yaml
+---
+- name: Déploiement orchestré
+  hosts: webservers
+  become: yes
+
+  vars:
+    app_version: "2.1.0"
+
+  # 1. Exécutées EN PREMIER
+  pre_tasks:
+    - name: Notifier le début du déploiement
+      ansible.builtin.uri:
+        url: https://monitoring.example.com/api/deploy/start
+        method: POST
+
+    - name: Mettre à jour le cache apt
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Vérifier l'espace disque
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first > 1000000000
+        fail_msg: "Espace disque insuffisant"
+
+  # 2. Exécutés APRÈS pre_tasks
+  roles:
+    - common
+    - nginx
+    - { role: application, version: "{{ app_version }}" }
+
+  # 3. Exécutées APRÈS les roles
+  tasks:
+    - name: Déployer l'application
+      ansible.builtin.copy:
+        src: "app-{{ app_version }}.tar.gz"
+        dest: /opt/app/
+
+    - name: Extraire l'archive
+      ansible.builtin.unarchive:
+        src: "/opt/app/app-{{ app_version }}.tar.gz"
+        dest: /opt/app/
+        remote_src: yes
+
+  # 4. Exécutées EN DERNIER
+  post_tasks:
+    - name: Vérifier que l'application répond
+      ansible.builtin.uri:
+        url: http://localhost:8080/health
+        status_code: 200
+        timeout: 30
+      retries: 5
+      delay: 10
+
+    - name: Notifier la fin du déploiement
+      ansible.builtin.uri:
+        url: https://monitoring.example.com/api/deploy/complete
+        method: POST
+
+    - name: Nettoyer les anciennes versions
+      ansible.builtin.find:
+        paths: /opt/app
+        patterns: "app-*.tar.gz"
+        age: 30d
+      register: old_archives
+
+    - name: Supprimer les archives obsolètes
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_archives.files }}"
+
+  # Handlers disponibles pour toutes les sections
+  handlers:
+    - name: Redémarrer Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+    - name: Recharger l'application
+      ansible.builtin.service:
+        name: myapp
+        state: reloaded
+```
+
+### Utilisation des roles
+
+#### Syntaxe simple
+
+```yaml
+roles:
+  - common
+  - webserver
+  - database
+```
+
+#### Syntaxe avec paramètres
+
+```yaml
+roles:
+  - role: nginx
+    nginx_port: 8080
+    nginx_worker_processes: 4
+
+  - role: postgresql
+    postgresql_version: "14"
+    postgresql_databases:
+      - name: myapp
+        owner: appuser
+```
+
+#### Syntaxe avec conditions et tags
+
+```yaml
+roles:
+  - role: apache
+    when: webserver_type == "apache"
+    tags:
+      - webserver
+      - apache
+
+  - role: nginx
+    when: webserver_type == "nginx"
+    tags:
+      - webserver
+      - nginx
+```
+
+#### Rôle avec délégation
+
+```yaml
+roles:
+  - role: load_balancer
+    delegate_to: "{{ groups['loadbalancers'][0] }}"
+```
+
+### Cas d'usage de pre_tasks
+
+```yaml
+pre_tasks:
+  # Vérifications préalables
+  - name: Vérifier la connectivité
+    ansible.builtin.ping:
+
+  # Mise à jour des facts
+  - name: Collecter les facts supplémentaires
+    ansible.builtin.setup:
+      gather_subset:
+        - network
+        - hardware
+
+  # Préparation de l'environnement
+  - name: Installer les prérequis système
+    ansible.builtin.apt:
+      name:
+        - python3
+        - python3-pip
+      state: present
+
+  # Sauvegarde avant changement
+  - name: Sauvegarder la configuration actuelle
+    ansible.builtin.copy:
+      src: /etc/myapp/config.yml
+      dest: "/backup/config.yml.{{ ansible_date_time.iso8601_basic_short }}"
+      remote_src: yes
+```
+
+### Cas d'usage de post_tasks
+
+```yaml
+post_tasks:
+  # Validation du déploiement
+  - name: Tests de fumée
+    ansible.builtin.uri:
+      url: "http://{{ ansible_default_ipv4.address }}:8080/"
+      status_code: 200
+
+  # Nettoyage
+  - name: Supprimer les fichiers temporaires
+    ansible.builtin.file:
+      path: /tmp/deployment
+      state: absent
+
+  # Notifications
+  - name: Envoyer une notification Slack
+    ansible.builtin.uri:
+      url: https://hooks.slack.com/services/xxx
+      method: POST
+      body_format: json
+      body:
+        text: "Déploiement terminé sur {{ inventory_hostname }}"
+
+  # Mise à jour de métriques
+  - name: Enregistrer la version déployée
+    ansible.builtin.lineinfile:
+      path: /etc/myapp/version.txt
+      line: "{{ app_version }}"
+      create: yes
+```
+
+### Ordre d'exécution complet avec handlers
+
+```yaml
+---
+- name: Exemple d'ordre d'exécution
+  hosts: all
+
+  pre_tasks:
+    - name: Pre-task 1
+      ansible.builtin.debug:
+        msg: "1. Pre-task"
+      notify: Handler A
+
+  roles:
+    - role: example_role
+      # Ce rôle contient ses propres tasks et peut notifier des handlers
+
+  tasks:
+    - name: Task 1
+      ansible.builtin.debug:
+        msg: "3. Task normale"
+      notify: Handler B
+
+  post_tasks:
+    - name: Post-task 1
+      ansible.builtin.debug:
+        msg: "4. Post-task"
+      notify: Handler C
+
+  handlers:
+    - name: Handler A
+      ansible.builtin.debug:
+        msg: "5. Handlers (exécutés après TOUTES les tasks)"
+
+    - name: Handler B
+      ansible.builtin.debug:
+        msg: "Handler B"
+
+    - name: Handler C
+      ansible.builtin.debug:
+        msg: "Handler C"
+
+# Ordre d'exécution :
+# 1. pre_tasks (et leurs handlers si flush_handlers)
+# 2. roles
+# 3. tasks
+# 4. post_tasks
+# 5. handlers (tous en fin de play)
+```
+
+## Exécution des playbooks
+
+### Commande de base
+
+```bash
+# Exécution simple
+ansible-playbook playbook.yml
+
+# Spécifier l'inventaire
+ansible-playbook -i inventory.ini playbook.yml
+ansible-playbook -i production/hosts playbook.yml
+
+# Spécifier un inventaire dynamique
+ansible-playbook -i inventory.py playbook.yml
+ansible-playbook -i inventory/aws_ec2.yml playbook.yml
+```
+
+### Option --limit
+
+Restreint l'exécution à un sous-ensemble d'hôtes.
+
+```bash
+# Un seul hôte
+ansible-playbook playbook.yml --limit web01.example.com
+
+# Plusieurs hôtes
+ansible-playbook playbook.yml --limit web01,web02,db01
+
+# Un groupe
+ansible-playbook playbook.yml --limit webservers
+
+# Plusieurs groupes
+ansible-playbook playbook.yml --limit webservers,dbservers
+
+# Pattern
+ansible-playbook playbook.yml --limit "web*"
+
+# Exclusion (tous sauf...)
+ansible-playbook playbook.yml --limit "all:!production"
+
+# Intersection (présent dans les deux groupes)
+ansible-playbook playbook.yml --limit "webservers:&production"
+
+# Depuis un fichier
+ansible-playbook playbook.yml --limit @hosts_to_patch.txt
+
+# Combiner patterns
+ansible-playbook playbook.yml --limit "webservers:&production:!web03"
+```
+
+### Option --check (mode dry-run)
+
+Simule l'exécution sans effectuer de changement réel.
+
+```bash
+# Mode check simple
+ansible-playbook playbook.yml --check
+
+# Mode check avec diff
+ansible-playbook playbook.yml --check --diff
+
+# Combiné avec limit
+ansible-playbook playbook.yml --check --limit web01
+```
+
+**Important** : Certains modules ne supportent pas le mode check. Utiliser `check_mode: no` pour les forcer à s'exécuter :
+
+```yaml
+tasks:
+  - name: Récupérer la version actuelle
+    ansible.builtin.command:
+      cmd: cat /opt/app/version.txt
+    register: current_version
+    check_mode: no  # Toujours exécuter, même en mode check
+
+  - name: Mettre à jour si nécessaire
+    ansible.builtin.copy:
+      src: "app-{{ new_version }}.tar.gz"
+      dest: /opt/app/
+    when: current_version.stdout != new_version
+```
+
+### Option --diff
+
+Affiche les différences pour les modifications de fichiers.
+
+```bash
+# Diff seul
+ansible-playbook playbook.yml --diff
+
+# Diff avec check (recommandé)
+ansible-playbook playbook.yml --check --diff
+
+# Utile pour les modules : copy, template, lineinfile, blockinfile, etc.
+```
+
+Exemple de sortie :
+
+```
+TASK [Configurer Nginx] ***
+--- before: /etc/nginx/nginx.conf
++++ after: /etc/nginx/nginx.conf
+@@ -1,4 +1,4 @@
+-worker_processes 2;
++worker_processes 4;
+```
+
+### Options de verbosité
+
+```bash
+# Niveau 1 : affiche les tâches
+ansible-playbook playbook.yml -v
+
+# Niveau 2 : affiche les résultats des tâches
+ansible-playbook playbook.yml -vv
+
+# Niveau 3 : affiche les détails des connexions
+ansible-playbook playbook.yml -vvv
+
+# Niveau 4 : debug complet (connexions SSH détaillées)
+ansible-playbook playbook.yml -vvvv
+```
+
+### Options d'authentification
+
+```bash
+# Spécifier l'utilisateur
+ansible-playbook playbook.yml -u deploy
+
+# Demander le mot de passe SSH
+ansible-playbook playbook.yml --ask-pass
+
+# Demander le mot de passe sudo
+ansible-playbook playbook.yml --ask-become-pass
+
+# Utiliser une clé SSH spécifique
+ansible-playbook playbook.yml --private-key ~/.ssh/deploy_key
+
+# Devenir un autre utilisateur
+ansible-playbook playbook.yml --become --become-user root
+```
+
+### Options de variables
+
+```bash
+# Passer une variable
+ansible-playbook playbook.yml -e "version=2.1.0"
+
+# Passer plusieurs variables
+ansible-playbook playbook.yml -e "version=2.1.0 env=production"
+
+# Depuis un fichier
+ansible-playbook playbook.yml -e "@vars/production.yml"
+
+# JSON en ligne
+ansible-playbook playbook.yml -e '{"version": "2.1.0", "deploy": true}'
+```
+
+### Options de contrôle d'exécution
+
+```bash
+# Démarrer à une tâche spécifique
+ansible-playbook playbook.yml --start-at-task "Installer Nginx"
+
+# Limite le nombre d'hôtes parallèles
+ansible-playbook playbook.yml --forks 10
+
+# Step by step (demande confirmation pour chaque tâche)
+ansible-playbook playbook.yml --step
+
+# Liste les tâches sans les exécuter
+ansible-playbook playbook.yml --list-tasks
+
+# Liste les hôtes ciblés
+ansible-playbook playbook.yml --list-hosts
+
+# Liste les tags disponibles
+ansible-playbook playbook.yml --list-tags
+
+# Syntaxe seulement (vérification)
+ansible-playbook playbook.yml --syntax-check
+```
+
+### Exemples de workflows complets
+
+#### Déploiement en production avec précautions
+
+```bash
+# 1. Vérifier la syntaxe
+ansible-playbook deploy.yml --syntax-check
+
+# 2. Simuler sur un hôte de test
+ansible-playbook deploy.yml --check --diff --limit test.example.com -v
+
+# 3. Exécuter sur le test
+ansible-playbook deploy.yml --limit test.example.com
+
+# 4. Simuler sur production
+ansible-playbook deploy.yml --check --diff --limit production -vv
+
+# 5. Exécuter sur production (un serveur à la fois)
+ansible-playbook deploy.yml --limit production --forks 1
+```
+
+#### Déploiement avec tags et variables
+
+```bash
+# Installation complète en production
+ansible-playbook site.yml \
+  -i inventory/production \
+  -e "version=2.1.0" \
+  -e "env=production" \
+  --limit webservers \
+  --tags install,configuration \
+  --diff
+
+# Mise à jour de configuration seulement
+ansible-playbook site.yml \
+  -i inventory/production \
+  --limit webservers \
+  --tags configuration \
+  --check --diff
+```
+
+#### Debug d'un problème
+
+```bash
+# Exécution très verbeuse sur un seul hôte
+ansible-playbook playbook.yml \
+  --limit web01.example.com \
+  -vvvv \
+  --step
+```
+
+#### Maintenance ciblée
+
+```bash
+# Redémarrage des services web sur un sous-ensemble
+ansible-playbook maintenance.yml \
+  --limit "webservers:&datacenter1" \
+  --tags restart \
+  -e "maintenance_mode=true" \
+  --forks 2
+```
+
+### Gestion des erreurs
+
+```bash
+# Continuer même en cas d'erreur (déconseillé en production)
+ansible-playbook playbook.yml --ignore-errors
+
+# Dans le playbook, gérer les erreurs par tâche
+```
+
+```yaml
+tasks:
+  - name: Tâche qui peut échouer
+    ansible.builtin.command:
+      cmd: /opt/script.sh
+    ignore_errors: yes
+
+  - name: Tâche critique
+    ansible.builtin.service:
+      name: critical_service
+      state: started
+    failed_when: false  # Ne jamais échouer
+
+  - name: Tâche avec condition d'échec custom
+    ansible.builtin.command:
+      cmd: check_status.sh
+    register: status
+    failed_when: "'ERROR' in status.stdout"
+```
+
+### Fichier de configuration ansible.cfg
+
+Pour éviter de répéter les options, configurer via `ansible.cfg` :
+
+```ini
+[defaults]
+inventory = ./inventory/production
+remote_user = deploy
+private_key_file = ~/.ssh/deploy_key
+host_key_checking = False
+retry_files_enabled = False
+forks = 20
+timeout = 30
+
+[privilege_escalation]
+become = True
+become_method = sudo
+become_user = root
+become_ask_pass = False
+
+[ssh_connection]
+pipelining = True
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s
+```
+
+Ensuite, l'exécution devient plus simple :
+
+```bash
+ansible-playbook playbook.yml --limit webservers
+```

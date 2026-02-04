@@ -1,0 +1,1444 @@
+# Conditionals & Loops
+
+Guide complet sur le contrôle de flux dans Ansible : conditionnels, boucles, gestion des erreurs et blocs.
+
+---
+
+## Conditionals (Conditions)
+
+Les conditionnels permettent d'exécuter des tâches selon des critères spécifiques.
+
+### Syntaxe de base avec `when`
+
+```yaml
+---
+- name: Conditionnels simples
+  hosts: webservers
+  tasks:
+    - name: Installer Apache sur Debian/Ubuntu
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Installer Apache sur RedHat/CentOS
+      ansible.builtin.yum:
+        name: httpd
+        state: present
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Vérifier si un fichier existe
+      ansible.builtin.stat:
+        path: /etc/myapp/config.yml
+      register: config_file
+
+    - name: Créer la configuration si elle n'existe pas
+      ansible.builtin.template:
+        src: config.yml.j2
+        dest: /etc/myapp/config.yml
+      when: not config_file.stat.exists
+```
+
+### Combinaisons logiques (and, or, not)
+
+```yaml
+---
+- name: Conditions combinées
+  hosts: all
+  tasks:
+    - name: Installer sur Ubuntu 22.04 uniquement
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+      when:
+        - ansible_facts['distribution'] == "Ubuntu"
+        - ansible_facts['distribution_version'] == "22.04"
+
+    - name: Condition OR (syntaxe liste)
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+      when: >
+        ansible_facts['os_family'] == "RedHat" or
+        ansible_facts['os_family'] == "Suse"
+
+    - name: Condition complexe avec NOT
+      ansible.builtin.debug:
+        msg: "Serveur de production non-critique"
+      when:
+        - environment == "production"
+        - not critical_server | default(false)
+
+    - name: Utilisation de parenthèses pour la priorité
+      ansible.builtin.debug:
+        msg: "Condition complexe validée"
+      when: >
+        (ansible_facts['distribution'] == "Ubuntu" and
+         ansible_facts['distribution_major_version'] | int >= 20) or
+        (ansible_facts['distribution'] == "Debian" and
+         ansible_facts['distribution_major_version'] | int >= 11)
+```
+
+### Conditions sur les facts
+
+```yaml
+---
+- name: Conditions basées sur les facts système
+  hosts: all
+  tasks:
+    - name: Action si plus de 8 Go de RAM
+      ansible.builtin.debug:
+        msg: "Serveur haute performance détecté"
+      when: ansible_facts['memtotal_mb'] > 8192
+
+    - name: Vérifier le nombre de CPU
+      ansible.builtin.debug:
+        msg: "Serveur multi-core : {{ ansible_facts['processor_vcpus'] }} vCPUs"
+      when: ansible_facts['processor_vcpus'] | int > 4
+
+    - name: Vérifier l'architecture
+      ansible.builtin.package:
+        name: mysql-server
+        state: present
+      when: ansible_facts['architecture'] == "x86_64"
+
+    - name: Condition sur l'espace disque
+      ansible.builtin.debug:
+        msg: "Partition racine presque pleine"
+      when: >
+        ansible_facts['mounts'] |
+        selectattr('mount', 'equalto', '/') |
+        map(attribute='size_available') |
+        first | int < 1073741824
+```
+
+### Conditions sur les registered variables
+
+```yaml
+---
+- name: Conditions avec variables enregistrées
+  hosts: all
+  tasks:
+    - name: Vérifier si Docker est installé
+      ansible.builtin.command: docker --version
+      register: docker_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Installer Docker si absent
+      ansible.builtin.include_role:
+        name: docker_install
+      when: docker_check.rc != 0
+
+    - name: Récupérer le statut d'un service
+      ansible.builtin.systemd:
+        name: nginx
+      register: nginx_status
+
+    - name: Redémarrer nginx si inactif
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+      when: nginx_status.status.ActiveState != "active"
+
+    - name: Analyser la sortie d'une commande
+      ansible.builtin.shell: df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
+      register: disk_usage
+      changed_when: false
+
+    - name: Alerter si disque > 80%
+      ansible.builtin.debug:
+        msg: "ATTENTION : Disque à {{ disk_usage.stdout }}%"
+      when: disk_usage.stdout | int > 80
+```
+
+### Conditions avancées avec Jinja2
+
+```yaml
+---
+- name: Expressions Jinja2 avancées
+  hosts: all
+  vars:
+    allowed_users:
+      - admin
+      - deploy
+      - monitoring
+  tasks:
+    - name: Vérifier si l'utilisateur est autorisé
+      ansible.builtin.debug:
+        msg: "Utilisateur {{ username }} autorisé"
+      when: username in allowed_users
+
+    - name: Condition avec tests Jinja2
+      ansible.builtin.file:
+        path: /var/app/cache
+        state: directory
+      when: app_cache_path is undefined
+
+    - name: Vérifier le format d'une variable
+      ansible.builtin.debug:
+        msg: "Port valide"
+      when: port | string | regex_search('^\d+$')
+
+    - name: Condition sur dictionnaire
+      ansible.builtin.debug:
+        msg: "Base de données configurée"
+      when: "'database' in config and config.database.enabled"
+```
+
+---
+
+## Loops (Boucles)
+
+Les boucles permettent d'exécuter une tâche plusieurs fois avec des valeurs différentes.
+
+### Boucle simple avec `loop`
+
+```yaml
+---
+- name: Boucles de base
+  hosts: all
+  tasks:
+    - name: Créer plusieurs utilisateurs
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: present
+        shell: /bin/bash
+      loop:
+        - alice
+        - bob
+        - charlie
+
+    - name: Installer plusieurs paquets
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - git
+        - curl
+        - wget
+        - vim
+        - htop
+
+    - name: Créer des répertoires
+      ansible.builtin.file:
+        path: "/opt/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - app1
+        - app2
+        - app3
+```
+
+### Boucle avec dictionnaires
+
+```yaml
+---
+- name: Boucles avec données structurées
+  hosts: all
+  tasks:
+    - name: Créer des utilisateurs avec attributs
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        groups: "{{ item.groups }}"
+        state: present
+      loop:
+        - { name: 'alice', uid: 1001, groups: 'sudo,docker' }
+        - { name: 'bob', uid: 1002, groups: 'docker' }
+        - { name: 'charlie', uid: 1003, groups: 'users' }
+
+    - name: Configurer des vhosts Nginx
+      ansible.builtin.template:
+        src: vhost.conf.j2
+        dest: "/etc/nginx/sites-available/{{ item.domain }}.conf"
+      loop:
+        - domain: example.com
+          root: /var/www/example
+          port: 80
+        - domain: test.com
+          root: /var/www/test
+          port: 8080
+      notify: reload nginx
+```
+
+### `with_items` (ancienne syntaxe, toujours supportée)
+
+```yaml
+---
+- name: Utilisation de with_items
+  hosts: all
+  tasks:
+    - name: Installer des paquets (with_items)
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - nginx
+        - redis-server
+        - postgresql
+
+    - name: with_items aplatit les listes automatiquement
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      with_items:
+        - [1, 2, 3]
+        - [4, 5]
+      # Affiche: 1, 2, 3, 4, 5 (liste aplatie)
+```
+
+### `with_dict` pour itérer sur des dictionnaires
+
+```yaml
+---
+- name: Boucles sur dictionnaires
+  hosts: all
+  vars:
+    databases:
+      myapp_db:
+        host: localhost
+        port: 5432
+        user: myapp
+      analytics_db:
+        host: db2.example.com
+        port: 5432
+        user: analytics
+  tasks:
+    - name: Créer des fichiers de config pour chaque DB
+      ansible.builtin.template:
+        src: database.conf.j2
+        dest: "/etc/myapp/{{ item.key }}.conf"
+      with_dict: "{{ databases }}"
+      # item.key = nom de la DB
+      # item.value = dictionnaire de config
+
+    - name: Afficher les informations de chaque DB
+      ansible.builtin.debug:
+        msg: "DB {{ item.key }} : {{ item.value.host }}:{{ item.value.port }}"
+      with_dict: "{{ databases }}"
+```
+
+### `with_fileglob` pour itérer sur des fichiers
+
+```yaml
+---
+- name: Boucles sur fichiers locaux
+  hosts: webservers
+  tasks:
+    - name: Copier tous les certificats SSL
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /etc/ssl/certs/
+        mode: '0644'
+      with_fileglob:
+        - /local/path/certs/*.crt
+
+    - name: Déployer des fichiers de configuration
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/etc/myapp/conf.d/"
+      with_fileglob:
+        - configs/*.conf
+        - configs/*.yml
+
+    - name: Traiter des scripts
+      ansible.builtin.script: "{{ item }}"
+      with_fileglob:
+        - scripts/deploy_*.sh
+```
+
+### `with_sequence` pour générer des séquences
+
+```yaml
+---
+- name: Boucles avec séquences numériques
+  hosts: all
+  tasks:
+    - name: Créer 10 répertoires numérotés
+      ansible.builtin.file:
+        path: "/data/partition{{ item }}"
+        state: directory
+      with_sequence: start=1 end=10
+
+    - name: Créer des utilisateurs numérotés avec padding
+      ansible.builtin.user:
+        name: "user{{ item }}"
+        state: present
+      with_sequence: start=1 end=5 format=%02d
+      # Génère: user01, user02, user03, user04, user05
+
+    - name: Séquence avec pas (step)
+      ansible.builtin.debug:
+        msg: "Port {{ item }}"
+      with_sequence: start=8080 end=8090 stride=2
+      # Génère: 8080, 8082, 8084, 8086, 8088, 8090
+```
+
+### `loop_control` : personnaliser les boucles
+
+```yaml
+---
+- name: Contrôle avancé des boucles
+  hosts: all
+  tasks:
+    - name: Utiliser label pour des sorties propres
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        comment: "{{ item.comment }}"
+      loop:
+        - name: alice
+          uid: 1001
+          comment: "Alice Developer"
+        - name: bob
+          uid: 1002
+          comment: "Bob Administrator"
+      loop_control:
+        label: "{{ item.name }}"
+      # Affiche seulement le nom dans la sortie, pas tout le dict
+
+    - name: Accéder à l'index de la boucle
+      ansible.builtin.debug:
+        msg: "Item {{ idx }}: {{ item }}"
+      loop:
+        - nginx
+        - redis
+        - postgresql
+      loop_control:
+        index_var: idx
+
+    - name: Pause entre chaque itération
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - service1
+        - service2
+        - service3
+      loop_control:
+        pause: 5
+      # Attend 5 secondes entre chaque redémarrage
+
+    - name: Nom de variable personnalisé
+      ansible.builtin.debug:
+        msg: "User: {{ user.name }}"
+      loop:
+        - { name: 'alice', role: 'admin' }
+        - { name: 'bob', role: 'user' }
+      loop_control:
+        loop_var: user
+      # Utilise 'user' au lieu de 'item'
+```
+
+### Boucles imbriquées
+
+```yaml
+---
+- name: Boucles imbriquées
+  hosts: all
+  tasks:
+    - name: Créer des fichiers pour chaque utilisateur/projet
+      ansible.builtin.file:
+        path: "/home/{{ item.0 }}/projects/{{ item.1 }}"
+        state: directory
+        owner: "{{ item.0 }}"
+      loop: "{{ users | product(projects) | list }}"
+      vars:
+        users:
+          - alice
+          - bob
+        projects:
+          - web
+          - api
+          - mobile
+
+    - name: Configuration croisée (alternative)
+      ansible.builtin.debug:
+        msg: "User {{ outer_item }} -> Project {{ inner_item }}"
+      loop: "{{ users }}"
+      loop_control:
+        loop_var: outer_item
+      vars:
+        users: [alice, bob]
+      include_tasks: nested_task.yml
+```
+
+---
+
+## Error Handling (Gestion des erreurs)
+
+Ansible offre plusieurs mécanismes pour gérer les erreurs et contrôler l'état des tâches.
+
+### `ignore_errors` : continuer malgré les erreurs
+
+```yaml
+---
+- name: Ignorer les erreurs
+  hosts: all
+  tasks:
+    - name: Tenter d'arrêter un service (peut ne pas être installé)
+      ansible.builtin.service:
+        name: apache2
+        state: stopped
+      ignore_errors: true
+
+    - name: Supprimer un fichier qui peut ne pas exister
+      ansible.builtin.file:
+        path: /tmp/old_file.txt
+        state: absent
+      ignore_errors: true
+
+    - name: Commande qui peut échouer
+      ansible.builtin.command: /opt/script.sh
+      register: script_result
+      ignore_errors: true
+
+    - name: Réagir selon le résultat
+      ansible.builtin.debug:
+        msg: "Le script a échoué, mais on continue"
+      when: script_result is failed
+```
+
+### `failed_when` : définir les conditions d'échec
+
+```yaml
+---
+- name: Conditions d'échec personnalisées
+  hosts: all
+  tasks:
+    - name: Vérifier un service (ne pas échouer si code retour 3)
+      ansible.builtin.command: systemctl status myapp
+      register: service_check
+      failed_when:
+        - service_check.rc != 0
+        - service_check.rc != 3
+      changed_when: false
+
+    - name: Échouer si la sortie contient ERROR
+      ansible.builtin.shell: /opt/healthcheck.sh
+      register: healthcheck
+      failed_when: "'ERROR' in healthcheck.stdout"
+
+    - name: Échouer sur plusieurs conditions
+      ansible.builtin.command: /usr/bin/backup.sh
+      register: backup_result
+      failed_when:
+        - backup_result.rc != 0
+        - "'WARNING' not in backup_result.stderr"
+
+    - name: Ne jamais échouer
+      ansible.builtin.command: risky_command.sh
+      failed_when: false
+```
+
+### `changed_when` : contrôler l'état changed
+
+```yaml
+---
+- name: Contrôle de l'état changed
+  hosts: all
+  tasks:
+    - name: Commande read-only (jamais changed)
+      ansible.builtin.command: cat /etc/hostname
+      register: hostname
+      changed_when: false
+
+    - name: Changed seulement si modification réelle
+      ansible.builtin.command: /opt/deploy.sh
+      register: deploy_result
+      changed_when: "'Deployed' in deploy_result.stdout"
+
+    - name: Conditions multiples pour changed
+      ansible.builtin.shell: |
+        if [ -f /var/app/updated ]; then
+          echo "Already up to date"
+          exit 0
+        else
+          echo "Updating..."
+          touch /var/app/updated
+          exit 0
+        fi
+      register: update_check
+      changed_when: "'Updating' in update_check.stdout"
+
+    - name: Forcer changed
+      ansible.builtin.command: echo "test"
+      changed_when: true
+      notify: restart service
+```
+
+### `any_errors_fatal` : arrêter tout en cas d'erreur
+
+```yaml
+---
+- name: Arrêt global sur erreur
+  hosts: all
+  any_errors_fatal: true
+  tasks:
+    - name: Validation critique
+      ansible.builtin.command: /opt/validate.sh
+      # Si cette tâche échoue sur UN hôte, tout s'arrête
+
+    - name: Déploiement synchronisé
+      ansible.builtin.copy:
+        src: app.tar.gz
+        dest: /opt/app.tar.gz
+
+- name: Sans any_errors_fatal (par défaut)
+  hosts: all
+  tasks:
+    - name: Tâche normale
+      ansible.builtin.debug:
+        msg: "Continue même si d'autres hôtes ont échoué"
+```
+
+### Combinaison des mécanismes d'erreur
+
+```yaml
+---
+- name: Gestion d'erreurs complexe
+  hosts: all
+  tasks:
+    - name: Tentative avec retry
+      ansible.builtin.uri:
+        url: https://api.example.com/health
+        status_code: 200
+      register: api_check
+      retries: 3
+      delay: 10
+      ignore_errors: true
+
+    - name: Action de repli si échec
+      ansible.builtin.debug:
+        msg: "API indisponible, mode dégradé activé"
+      when: api_check is failed
+
+    - name: Validation avec failed_when et changed_when
+      ansible.builtin.shell: |
+        result=$(curl -s http://localhost/status)
+        echo "$result"
+        exit 0
+      register: status_check
+      changed_when: false
+      failed_when: "'healthy' not in status_check.stdout"
+```
+
+---
+
+## Blocks (try/catch Ansible)
+
+Les blocs permettent de regrouper des tâches et de gérer les erreurs avec `rescue` et `always`.
+
+### Structure de base : `block` / `rescue` / `always`
+
+```yaml
+---
+- name: Blocs pour gestion d'erreurs
+  hosts: all
+  tasks:
+    - name: Bloc avec gestion d'erreur
+      block:
+        - name: Tentative de déploiement
+          ansible.builtin.copy:
+            src: /local/app.tar.gz
+            dest: /opt/app.tar.gz
+
+        - name: Extraction de l'application
+          ansible.builtin.unarchive:
+            src: /opt/app.tar.gz
+            dest: /opt/app/
+            remote_src: true
+
+        - name: Démarrage du service
+          ansible.builtin.service:
+            name: myapp
+            state: started
+
+      rescue:
+        - name: En cas d'erreur - rollback
+          ansible.builtin.debug:
+            msg: "Erreur lors du déploiement, rollback en cours"
+
+        - name: Restaurer la version précédente
+          ansible.builtin.command: /opt/rollback.sh
+
+        - name: Notifier l'équipe
+          ansible.builtin.uri:
+            url: https://alerts.example.com/webhook
+            method: POST
+            body_format: json
+            body:
+              message: "Déploiement échoué sur {{ inventory_hostname }}"
+
+      always:
+        - name: Nettoyage (toujours exécuté)
+          ansible.builtin.file:
+            path: /opt/app.tar.gz
+            state: absent
+
+        - name: Log de l'opération
+          ansible.builtin.lineinfile:
+            path: /var/log/deployment.log
+            line: "{{ ansible_date_time.iso8601 }} - Déploiement tenté"
+            create: true
+```
+
+### Blocs imbriqués
+
+```yaml
+---
+- name: Blocs imbriqués
+  hosts: databases
+  tasks:
+    - name: Bloc principal - Maintenance DB
+      block:
+        - name: Arrêt des connexions
+          ansible.builtin.shell: psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='mydb'"
+          become: true
+          become_user: postgres
+
+        - name: Bloc de sauvegarde
+          block:
+            - name: Dump de la base
+              community.postgresql.postgresql_db:
+                name: mydb
+                state: dump
+                target: /backup/mydb_{{ ansible_date_time.date }}.sql
+
+            - name: Compression du dump
+              community.general.archive:
+                path: /backup/mydb_{{ ansible_date_time.date }}.sql
+                dest: /backup/mydb_{{ ansible_date_time.date }}.sql.gz
+                remove: true
+
+          rescue:
+            - name: Échec de la sauvegarde
+              ansible.builtin.fail:
+                msg: "Impossible de sauvegarder la base"
+
+        - name: Maintenance de la base
+          ansible.builtin.command: psql mydb -c "VACUUM FULL"
+          become: true
+          become_user: postgres
+
+      rescue:
+        - name: Restauration en cas d'erreur
+          ansible.builtin.debug:
+            msg: "Erreur critique, restauration nécessaire"
+
+      always:
+        - name: Réautoriser les connexions
+          ansible.builtin.service:
+            name: postgresql
+            state: started
+```
+
+### Blocs avec variables et conditions
+
+```yaml
+---
+- name: Blocs conditionnels
+  hosts: all
+  vars:
+    deployment_type: blue_green
+  tasks:
+    - name: Déploiement Blue/Green
+      block:
+        - name: Déployer sur environnement Blue
+          ansible.builtin.include_role:
+            name: deploy_app
+          vars:
+            target_env: blue
+
+        - name: Tests de santé
+          ansible.builtin.uri:
+            url: http://blue.internal/health
+            status_code: 200
+
+        - name: Basculer le trafic vers Blue
+          ansible.builtin.command: /opt/switch_traffic.sh blue
+
+      rescue:
+        - name: Rollback vers Green
+          ansible.builtin.command: /opt/switch_traffic.sh green
+
+        - name: Nettoyer Blue
+          ansible.builtin.command: /opt/cleanup.sh blue
+
+      when: deployment_type == "blue_green"
+```
+
+### Blocs pour atomicité des opérations
+
+```yaml
+---
+- name: Opérations atomiques
+  hosts: all
+  tasks:
+    - name: Mise à jour atomique de la configuration
+      block:
+        - name: Backup de la config actuelle
+          ansible.builtin.copy:
+            src: /etc/myapp/config.yml
+            dest: /etc/myapp/config.yml.backup
+            remote_src: true
+
+        - name: Déployer nouvelle config
+          ansible.builtin.template:
+            src: config.yml.j2
+            dest: /etc/myapp/config.yml
+            validate: /usr/bin/myapp validate %s
+
+        - name: Recharger l'application
+          ansible.builtin.service:
+            name: myapp
+            state: reloaded
+
+        - name: Vérifier que l'app fonctionne
+          ansible.builtin.wait_for:
+            host: localhost
+            port: 8080
+            timeout: 30
+
+      rescue:
+        - name: Restaurer l'ancienne config
+          ansible.builtin.copy:
+            src: /etc/myapp/config.yml.backup
+            dest: /etc/myapp/config.yml
+            remote_src: true
+
+        - name: Redémarrer avec l'ancienne config
+          ansible.builtin.service:
+            name: myapp
+            state: restarted
+
+      always:
+        - name: Supprimer le backup temporaire
+          ansible.builtin.file:
+            path: /etc/myapp/config.yml.backup
+            state: absent
+          when: myapp_healthy | default(false)
+```
+
+---
+
+## Tags avancés
+
+Les tags permettent d'exécuter sélectivement des tâches ou des ensembles de tâches.
+
+### Tags de base
+
+```yaml
+---
+- name: Utilisation des tags
+  hosts: all
+  tasks:
+    - name: Installer les dépendances
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - git
+        - curl
+        - wget
+      tags:
+        - setup
+        - dependencies
+
+    - name: Configurer l'application
+      ansible.builtin.template:
+        src: app.conf.j2
+        dest: /etc/myapp/app.conf
+      tags:
+        - config
+        - setup
+
+    - name: Démarrer le service
+      ansible.builtin.service:
+        name: myapp
+        state: started
+      tags:
+        - deploy
+        - service
+
+    - name: Tests post-déploiement
+      ansible.builtin.uri:
+        url: http://localhost:8080/health
+      tags:
+        - test
+        - validation
+```
+
+Exécution :
+```bash
+# Exécuter seulement les tâches avec le tag 'config'
+ansible-playbook playbook.yml --tags config
+
+# Exécuter plusieurs tags
+ansible-playbook playbook.yml --tags "setup,deploy"
+
+# Exclure des tags
+ansible-playbook playbook.yml --skip-tags test
+```
+
+### Tag spécial `always`
+
+```yaml
+---
+- name: Tags always
+  hosts: all
+  tasks:
+    - name: Cette tâche s'exécute TOUJOURS
+      ansible.builtin.debug:
+        msg: "Début du playbook - {{ ansible_date_time.iso8601 }}"
+      tags:
+        - always
+
+    - name: Vérification de santé (toujours)
+      ansible.builtin.wait_for:
+        host: localhost
+        port: 22
+        timeout: 5
+      tags:
+        - always
+
+    - name: Installation (seulement si --tags install)
+      ansible.builtin.package:
+        name: nginx
+        state: present
+      tags:
+        - install
+
+    - name: Log final (toujours)
+      ansible.builtin.lineinfile:
+        path: /var/log/ansible.log
+        line: "Playbook exécuté le {{ ansible_date_time.iso8601 }}"
+        create: true
+      tags:
+        - always
+```
+
+Même avec `--tags install`, les tâches `always` s'exécutent.
+
+### Tags sur les blocs
+
+```yaml
+---
+- name: Tags sur blocs
+  hosts: all
+  tasks:
+    - name: Bloc de configuration base de données
+      block:
+        - name: Installer PostgreSQL
+          ansible.builtin.package:
+            name: postgresql
+            state: present
+
+        - name: Configurer PostgreSQL
+          ansible.builtin.template:
+            src: postgresql.conf.j2
+            dest: /etc/postgresql/14/main/postgresql.conf
+
+        - name: Démarrer PostgreSQL
+          ansible.builtin.service:
+            name: postgresql
+            state: started
+
+      tags:
+        - database
+        - setup
+
+    - name: Bloc de configuration web
+      block:
+        - name: Installer Nginx
+          ansible.builtin.package:
+            name: nginx
+            state: present
+
+        - name: Configurer Nginx
+          ansible.builtin.template:
+            src: nginx.conf.j2
+            dest: /etc/nginx/nginx.conf
+
+      tags:
+        - webserver
+        - setup
+```
+
+### Tags sur les rôles
+
+```yaml
+---
+- name: Tags sur les rôles
+  hosts: all
+  roles:
+    - role: common
+      tags:
+        - common
+        - base
+
+    - role: security
+      tags:
+        - security
+        - hardening
+
+    - role: monitoring
+      tags:
+        - monitoring
+        - observability
+
+  tasks:
+    - name: Configuration finale
+      ansible.builtin.debug:
+        msg: "Tous les rôles sont appliqués"
+      tags:
+        - finalize
+```
+
+### Tags dynamiques et conditionnels
+
+```yaml
+---
+- name: Tags avec conditions
+  hosts: all
+  tasks:
+    - name: Déploiement production
+      ansible.builtin.include_role:
+        name: deploy_app
+      vars:
+        environment: production
+      tags:
+        - deploy
+        - production
+      when: "'production' in group_names"
+
+    - name: Déploiement staging
+      ansible.builtin.include_role:
+        name: deploy_app
+      vars:
+        environment: staging
+      tags:
+        - deploy
+        - staging
+      when: "'staging' in group_names"
+
+    - name: Debug (jamais en production)
+      ansible.builtin.debug:
+        msg: "Mode debug activé"
+      tags:
+        - debug
+        - never
+      # Le tag 'never' empêche l'exécution sauf si explicitement demandé
+```
+
+### Tag spécial `never`
+
+```yaml
+---
+- name: Tags never
+  hosts: all
+  tasks:
+    - name: Nettoyage complet (destructif)
+      ansible.builtin.file:
+        path: /var/lib/myapp
+        state: absent
+      tags:
+        - never
+        - cleanup_full
+
+    - name: Réinitialisation de la base de données
+      ansible.builtin.command: /opt/reset_database.sh
+      tags:
+        - never
+        - reset_db
+
+    - name: Configuration normale
+      ansible.builtin.template:
+        src: config.j2
+        dest: /etc/myapp/config.yml
+      tags:
+        - config
+```
+
+Utilisation :
+```bash
+# Ces tâches ne s'exécutent PAS par défaut
+ansible-playbook playbook.yml
+
+# Pour les exécuter, il faut les demander explicitement
+ansible-playbook playbook.yml --tags cleanup_full
+ansible-playbook playbook.yml --tags reset_db
+```
+
+### Combinaison avancée de tags
+
+```yaml
+---
+- name: Stratégie de tags complète
+  hosts: all
+  tasks:
+    - name: Préparation système
+      block:
+        - name: Mise à jour du cache de paquets
+          ansible.builtin.apt:
+            update_cache: true
+          when: ansible_facts['os_family'] == "Debian"
+
+        - name: Installation des dépendances
+          ansible.builtin.package:
+            name: "{{ common_packages }}"
+            state: present
+
+      tags:
+        - always
+        - preparation
+
+    - name: Déploiement applicatif
+      block:
+        - name: Arrêt du service
+          ansible.builtin.service:
+            name: myapp
+            state: stopped
+          tags:
+            - stop
+
+        - name: Mise à jour du code
+          ansible.builtin.git:
+            repo: https://github.com/example/myapp.git
+            dest: /opt/myapp
+            version: "{{ app_version | default('main') }}"
+          tags:
+            - update
+
+        - name: Installation des dépendances Python
+          ansible.builtin.pip:
+            requirements: /opt/myapp/requirements.txt
+            virtualenv: /opt/myapp/venv
+          tags:
+            - dependencies
+
+        - name: Migration de la base de données
+          ansible.builtin.command: /opt/myapp/venv/bin/python manage.py migrate
+          args:
+            chdir: /opt/myapp
+          tags:
+            - migrate
+            - database
+
+        - name: Redémarrage du service
+          ansible.builtin.service:
+            name: myapp
+            state: started
+          tags:
+            - start
+
+      tags:
+        - deploy
+
+    - name: Validation post-déploiement
+      block:
+        - name: Test de santé HTTP
+          ansible.builtin.uri:
+            url: http://localhost:8080/health
+            status_code: 200
+          retries: 5
+          delay: 3
+
+        - name: Vérification des logs
+          ansible.builtin.command: tail -n 50 /var/log/myapp/app.log
+          register: app_logs
+          changed_when: false
+
+        - name: Afficher les logs
+          ansible.builtin.debug:
+            var: app_logs.stdout_lines
+
+      tags:
+        - validate
+        - test
+
+    - name: Rollback (en cas de problème)
+      block:
+        - name: Restaurer la version précédente
+          ansible.builtin.git:
+            repo: https://github.com/example/myapp.git
+            dest: /opt/myapp
+            version: "{{ previous_version }}"
+
+        - name: Redémarrer
+          ansible.builtin.service:
+            name: myapp
+            state: restarted
+
+      tags:
+        - never
+        - rollback
+```
+
+Scénarios d'utilisation :
+```bash
+# Déploiement complet
+ansible-playbook playbook.yml --tags deploy
+
+# Seulement la mise à jour du code
+ansible-playbook playbook.yml --tags update
+
+# Mise à jour + migration
+ansible-playbook playbook.yml --tags "update,migrate"
+
+# Tout sauf les tests
+ansible-playbook playbook.yml --skip-tags test
+
+# Rollback manuel
+ansible-playbook playbook.yml --tags rollback --extra-vars "previous_version=v1.2.3"
+
+# Seulement la validation (+ les tâches 'always')
+ansible-playbook playbook.yml --tags validate
+```
+
+---
+
+## Exemples pratiques complets
+
+### Déploiement d'application web avec contrôle de flux complet
+
+```yaml
+---
+- name: Déploiement web avec gestion complète
+  hosts: webservers
+  vars:
+    app_version: "{{ lookup('env', 'APP_VERSION') | default('latest') }}"
+    max_deploy_time: 300
+
+  tasks:
+    - name: Validation pré-déploiement
+      block:
+        - name: Vérifier la connectivité
+          ansible.builtin.wait_for:
+            host: "{{ inventory_hostname }}"
+            port: 22
+            timeout: 10
+          delegate_to: localhost
+
+        - name: Vérifier l'espace disque
+          ansible.builtin.shell: df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
+          register: disk_space
+          changed_when: false
+          failed_when: disk_space.stdout | int > 90
+
+        - name: Vérifier que le port 80 est libre
+          ansible.builtin.wait_for:
+            port: 80
+            state: stopped
+            timeout: 5
+          when: deployment_mode == "fresh"
+
+      tags:
+        - always
+        - validation
+
+    - name: Préparation de l'environnement
+      block:
+        - name: Créer les répertoires nécessaires
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - /opt/myapp
+            - /opt/myapp/releases
+            - /opt/myapp/shared
+            - /var/log/myapp
+
+        - name: Installer les dépendances système
+          ansible.builtin.package:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - nginx
+            - python3-pip
+            - python3-venv
+            - git
+          when: ansible_facts['os_family'] == "Debian"
+
+      tags:
+        - setup
+        - dependencies
+
+    - name: Déploiement
+      block:
+        - name: Cloner le dépôt
+          ansible.builtin.git:
+            repo: https://github.com/example/myapp.git
+            dest: "/opt/myapp/releases/{{ app_version }}"
+            version: "{{ app_version }}"
+            force: true
+
+        - name: Créer l'environnement virtuel
+          ansible.builtin.command: python3 -m venv venv
+          args:
+            chdir: "/opt/myapp/releases/{{ app_version }}"
+            creates: "/opt/myapp/releases/{{ app_version }}/venv"
+
+        - name: Installer les dépendances Python
+          ansible.builtin.pip:
+            requirements: "/opt/myapp/releases/{{ app_version }}/requirements.txt"
+            virtualenv: "/opt/myapp/releases/{{ app_version }}/venv"
+
+        - name: Lier les fichiers partagés
+          ansible.builtin.file:
+            src: "/opt/myapp/shared/{{ item }}"
+            dest: "/opt/myapp/releases/{{ app_version }}/{{ item }}"
+            state: link
+          loop:
+            - .env
+            - uploads
+            - storage
+          ignore_errors: true
+
+        - name: Exécuter les migrations de base de données
+          ansible.builtin.command: |
+            /opt/myapp/releases/{{ app_version }}/venv/bin/python manage.py migrate --noinput
+          args:
+            chdir: "/opt/myapp/releases/{{ app_version }}"
+          register: migration_result
+          changed_when: "'No migrations to apply' not in migration_result.stdout"
+
+        - name: Collecter les fichiers statiques
+          ansible.builtin.command: |
+            /opt/myapp/releases/{{ app_version }}/venv/bin/python manage.py collectstatic --noinput
+          args:
+            chdir: "/opt/myapp/releases/{{ app_version }}"
+
+        - name: Créer le lien symbolique vers la nouvelle version
+          ansible.builtin.file:
+            src: "/opt/myapp/releases/{{ app_version }}"
+            dest: /opt/myapp/current
+            state: link
+            force: true
+
+        - name: Redémarrer l'application
+          ansible.builtin.systemd:
+            name: myapp
+            state: restarted
+            daemon_reload: true
+
+      rescue:
+        - name: Déploiement échoué - Rollback
+          ansible.builtin.debug:
+            msg: "Erreur lors du déploiement, rollback en cours..."
+
+        - name: Récupérer la version précédente
+          ansible.builtin.command: readlink /opt/myapp/current.backup
+          register: previous_version
+          ignore_errors: true
+          changed_when: false
+
+        - name: Restaurer l'ancienne version
+          ansible.builtin.file:
+            src: "{{ previous_version.stdout }}"
+            dest: /opt/myapp/current
+            state: link
+            force: true
+          when: previous_version.stdout is defined
+
+        - name: Redémarrer avec l'ancienne version
+          ansible.builtin.systemd:
+            name: myapp
+            state: restarted
+
+        - name: Notifier l'échec
+          ansible.builtin.fail:
+            msg: "Le déploiement a échoué et a été annulé"
+
+      always:
+        - name: Enregistrer la date de déploiement
+          ansible.builtin.lineinfile:
+            path: /opt/myapp/deployments.log
+            line: "{{ ansible_date_time.iso8601 }} - {{ app_version }} - {{ deployment_status | default('unknown') }}"
+            create: true
+
+      tags:
+        - deploy
+
+    - name: Tests post-déploiement
+      block:
+        - name: Attendre que l'application démarre
+          ansible.builtin.wait_for:
+            port: 8000
+            timeout: 60
+
+        - name: Test de santé HTTP
+          ansible.builtin.uri:
+            url: http://localhost:8000/health
+            status_code: 200
+            return_content: true
+          register: health_check
+          retries: 10
+          delay: 5
+
+        - name: Vérifier la version déployée
+          ansible.builtin.uri:
+            url: http://localhost:8000/version
+            return_content: true
+          register: version_check
+          failed_when: app_version not in version_check.content
+
+        - name: Tests fonctionnels basiques
+          ansible.builtin.uri:
+            url: "http://localhost:8000{{ item }}"
+            status_code: 200
+          loop:
+            - /
+            - /api/status
+            - /api/metrics
+          register: endpoint_tests
+
+      tags:
+        - test
+        - validation
+
+    - name: Nettoyage
+      block:
+        - name: Lister les anciennes releases
+          ansible.builtin.find:
+            paths: /opt/myapp/releases
+            file_type: directory
+          register: all_releases
+
+        - name: Conserver seulement les 3 dernières releases
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ all_releases.files | sort(attribute='mtime') | reverse | list[3:] }}"
+          when: all_releases.files | length > 3
+
+      tags:
+        - cleanup
+        - always
+```
+
+Ce playbook complet illustre :
+- Validation pré-déploiement avec contrôles d'espace disque
+- Préparation avec boucles et conditions
+- Déploiement avec gestion d'erreurs via blocks
+- Rollback automatique en cas d'échec
+- Tests post-déploiement avec retries
+- Nettoyage automatique des anciennes versions
+- Tags pour exécution sélective
+- Section `always` pour les logs
+
+---
+
+## Conclusion
+
+Le contrôle de flux dans Ansible offre une grande flexibilité :
+
+1. **Conditionnels** : Adapter l'exécution selon le contexte (OS, facts, variables)
+2. **Boucles** : Automatiser les tâches répétitives avec diverses sources de données
+3. **Gestion d'erreurs** : Contrôler finement les échecs et les états changed
+4. **Blocs** : Structurer le code avec gestion d'erreurs type try/catch
+5. **Tags** : Exécuter sélectivement des portions de playbooks
+
+Ces mécanismes permettent de créer des playbooks robustes, maintenables et adaptés à des environnements complexes.

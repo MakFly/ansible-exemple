@@ -1,0 +1,2129 @@
+# Cas d'Usage Réels
+
+Cette section présente des cas d'usage concrets et des playbooks Ansible pour résoudre des problématiques réelles d'infrastructure et de déploiement.
+
+## Provisioning Serveur : Configuration Initiale
+
+Configuration de base d'un nouveau serveur : création d'utilisateurs, sécurisation SSH, configuration du firewall et installation des packages essentiels.
+
+```yaml
+---
+- name: Provisioning initial d'un serveur
+  hosts: new_servers
+  become: true
+  vars:
+    admin_user: devops
+    admin_ssh_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+    allowed_ssh_port: 2222
+
+  tasks:
+    - name: Mettre à jour le cache des packages
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Installer les packages de base
+      ansible.builtin.package:
+        name:
+          - vim
+          - git
+          - curl
+          - wget
+          - htop
+          - net-tools
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+        state: present
+
+    - name: Créer l'utilisateur admin avec sudo
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        groups: sudo
+        append: true
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Configurer la clé SSH pour l'utilisateur admin
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ admin_ssh_key }}"
+        state: present
+        exclusive: false
+
+    - name: Désactiver l'authentification par mot de passe SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+        state: present
+      notify: Restart sshd
+
+    - name: Désactiver la connexion root SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+        state: present
+      notify: Restart sshd
+
+    - name: Changer le port SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?Port"
+        line: "Port {{ allowed_ssh_port }}"
+        state: present
+      notify: Restart sshd
+
+    - name: Configurer UFW - Autoriser SSH
+      community.general.ufw:
+        rule: allow
+        port: "{{ allowed_ssh_port }}"
+        proto: tcp
+
+    - name: Configurer UFW - Autoriser HTTP
+      community.general.ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Configurer UFW - Autoriser HTTPS
+      community.general.ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+
+    - name: Activer UFW
+      community.general.ufw:
+        state: enabled
+        policy: deny
+
+    - name: Configurer les mises à jour automatiques
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+          };
+          Unattended-Upgrade::Automatic-Reboot "false";
+        mode: '0644'
+
+    - name: Configurer le timezone
+      community.general.timezone:
+        name: Europe/Paris
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: sshd
+        state: restarted
+```
+
+## Déploiement Application Web (Zero-Downtime)
+
+Déploiement d'une application web avec Nginx en tant que reverse proxy, avec stratégie de déploiement sans interruption de service.
+
+```yaml
+---
+- name: Déploiement application web avec zero-downtime
+  hosts: web_servers
+  become: true
+  serial: 1  # Déployer un serveur à la fois
+  vars:
+    app_name: myapp
+    app_version: "{{ lookup('env', 'APP_VERSION') | default('latest', true) }}"
+    app_repo: https://github.com/company/myapp.git
+    app_dir: /var/www/{{ app_name }}
+    releases_dir: "{{ app_dir }}/releases"
+    current_release_dir: "{{ releases_dir }}/{{ ansible_date_time.epoch }}"
+    current_symlink: "{{ app_dir }}/current"
+    shared_dir: "{{ app_dir }}/shared"
+    releases_to_keep: 5
+
+  tasks:
+    - name: Installer Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+
+    - name: Installer Node.js
+      ansible.builtin.apt:
+        name:
+          - nodejs
+          - npm
+        state: present
+
+    - name: Créer la structure de répertoires
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+      loop:
+        - "{{ app_dir }}"
+        - "{{ releases_dir }}"
+        - "{{ shared_dir }}"
+        - "{{ shared_dir }}/logs"
+        - "{{ shared_dir }}/config"
+
+    - name: Cloner la nouvelle version de l'application
+      ansible.builtin.git:
+        repo: "{{ app_repo }}"
+        dest: "{{ current_release_dir }}"
+        version: "{{ app_version }}"
+        force: true
+      become_user: www-data
+
+    - name: Créer un symlink vers le fichier de configuration partagé
+      ansible.builtin.file:
+        src: "{{ shared_dir }}/config/.env"
+        dest: "{{ current_release_dir }}/.env"
+        state: link
+        force: true
+
+    - name: Installer les dépendances de l'application
+      community.general.npm:
+        path: "{{ current_release_dir }}"
+        state: present
+        production: true
+      become_user: www-data
+
+    - name: Builder l'application
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ current_release_dir }}"
+      become_user: www-data
+      changed_when: true
+
+    - name: Vérifier que l'application démarre correctement
+      ansible.builtin.command:
+        cmd: node server.js
+        chdir: "{{ current_release_dir }}"
+      become_user: www-data
+      async: 5
+      poll: 0
+      register: health_check
+      changed_when: false
+
+    - name: Attendre quelques secondes pour le health check
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Retirer le serveur du load balancer
+      ansible.builtin.uri:
+        url: "http://loadbalancer.local/api/servers/{{ inventory_hostname }}/drain"
+        method: POST
+      delegate_to: localhost
+      when: use_load_balancer | default(false)
+
+    - name: Mettre à jour le symlink current vers la nouvelle release
+      ansible.builtin.file:
+        src: "{{ current_release_dir }}"
+        dest: "{{ current_symlink }}"
+        state: link
+        force: true
+
+    - name: Configurer Nginx pour l'application
+      ansible.builtin.template:
+        src: templates/nginx_app.conf.j2
+        dest: "/etc/nginx/sites-available/{{ app_name }}"
+        mode: '0644'
+      notify: Reload nginx
+
+    - name: Activer le site Nginx
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/{{ app_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ app_name }}"
+        state: link
+      notify: Reload nginx
+
+    - name: Créer le service systemd pour l'application
+      ansible.builtin.template:
+        src: templates/app_service.j2
+        dest: "/etc/systemd/system/{{ app_name }}.service"
+        mode: '0644'
+      notify: Reload systemd
+
+    - name: Démarrer et activer le service de l'application
+      ansible.builtin.systemd:
+        name: "{{ app_name }}"
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Attendre que l'application soit prête
+      ansible.builtin.uri:
+        url: "http://localhost:3000/health"
+        status_code: 200
+      retries: 10
+      delay: 3
+      register: result
+      until: result.status == 200
+
+    - name: Réintégrer le serveur dans le load balancer
+      ansible.builtin.uri:
+        url: "http://loadbalancer.local/api/servers/{{ inventory_hostname }}/active"
+        method: POST
+      delegate_to: localhost
+      when: use_load_balancer | default(false)
+
+    - name: Nettoyer les anciennes releases
+      ansible.builtin.shell: |
+        cd {{ releases_dir }} && \
+        ls -1t | tail -n +{{ releases_to_keep + 1 }} | xargs -r rm -rf
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+```
+
+## Stack LAMP/LEMP Complète
+
+Déploiement d'une stack LEMP (Linux, Nginx, MySQL, PHP) avec configuration optimisée pour une application PHP.
+
+```yaml
+---
+- name: Déploiement stack LEMP complète
+  hosts: web_servers
+  become: true
+  vars:
+    mysql_root_password: "{{ vault_mysql_root_password }}"
+    mysql_database: wordpress_db
+    mysql_user: wordpress_user
+    mysql_password: "{{ vault_mysql_password }}"
+    php_version: "8.2"
+    domain_name: example.com
+
+  tasks:
+    # Installation Nginx
+    - name: Installer Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+
+    # Installation MySQL
+    - name: Installer MySQL Server
+      ansible.builtin.apt:
+        name:
+          - mysql-server
+          - mysql-client
+          - python3-pymysql
+        state: present
+
+    - name: Démarrer et activer MySQL
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Configurer le mot de passe root MySQL
+      community.mysql.mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+
+    - name: Créer le fichier .my.cnf pour root
+      ansible.builtin.copy:
+        dest: /root/.my.cnf
+        content: |
+          [client]
+          user=root
+          password={{ mysql_root_password }}
+        mode: '0600'
+
+    - name: Supprimer les utilisateurs anonymes MySQL
+      community.mysql.mysql_user:
+        name: ''
+        host_all: true
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Supprimer la base de données de test
+      community.mysql.mysql_db:
+        name: test
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Créer la base de données de l'application
+      community.mysql.mysql_db:
+        name: "{{ mysql_database }}"
+        state: present
+        encoding: utf8mb4
+        collation: utf8mb4_unicode_ci
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Créer l'utilisateur MySQL de l'application
+      community.mysql.mysql_user:
+        name: "{{ mysql_user }}"
+        password: "{{ mysql_password }}"
+        priv: "{{ mysql_database }}.*:ALL"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    # Installation PHP
+    - name: Ajouter le repository PHP
+      ansible.builtin.apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+
+    - name: Installer PHP et extensions
+      ansible.builtin.apt:
+        name:
+          - "php{{ php_version }}-fpm"
+          - "php{{ php_version }}-mysql"
+          - "php{{ php_version }}-curl"
+          - "php{{ php_version }}-gd"
+          - "php{{ php_version }}-mbstring"
+          - "php{{ php_version }}-xml"
+          - "php{{ php_version }}-zip"
+          - "php{{ php_version }}-opcache"
+        state: present
+        update_cache: true
+
+    - name: Optimiser la configuration PHP-FPM
+      ansible.builtin.lineinfile:
+        path: "/etc/php/{{ php_version }}/fpm/php.ini"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^memory_limit', line: 'memory_limit = 256M' }
+        - { regexp: '^upload_max_filesize', line: 'upload_max_filesize = 64M' }
+        - { regexp: '^post_max_size', line: 'post_max_size = 64M' }
+        - { regexp: '^max_execution_time', line: 'max_execution_time = 300' }
+      notify: Restart php-fpm
+
+    - name: Créer le répertoire de l'application web
+      ansible.builtin.file:
+        path: /var/www/{{ domain_name }}
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Configurer Nginx pour PHP
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/{{ domain_name }}
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain_name }} www.{{ domain_name }};
+              root /var/www/{{ domain_name }};
+              index index.php index.html;
+
+              access_log /var/log/nginx/{{ domain_name }}_access.log;
+              error_log /var/log/nginx/{{ domain_name }}_error.log;
+
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
+
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/var/run/php/php{{ php_version }}-fpm.sock;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  include fastcgi_params;
+              }
+
+              location ~ /\.ht {
+                  deny all;
+              }
+
+              location = /favicon.ico {
+                  log_not_found off;
+                  access_log off;
+              }
+
+              location = /robots.txt {
+                  log_not_found off;
+                  access_log off;
+              }
+
+              location ~* \.(css|gif|ico|jpeg|jpg|js|png)$ {
+                  expires max;
+                  log_not_found off;
+              }
+          }
+        mode: '0644'
+      notify: Reload nginx
+
+    - name: Activer le site Nginx
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/{{ domain_name }}
+        dest: /etc/nginx/sites-enabled/{{ domain_name }}
+        state: link
+      notify: Reload nginx
+
+    - name: Désactiver le site par défaut Nginx
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload nginx
+
+    - name: Créer un fichier PHP de test
+      ansible.builtin.copy:
+        dest: /var/www/{{ domain_name }}/info.php
+        content: |
+          <?php
+          phpinfo();
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+  handlers:
+    - name: Restart php-fpm
+      ansible.builtin.service:
+        name: "php{{ php_version }}-fpm"
+        state: restarted
+
+    - name: Reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+```
+
+## Déploiement Docker : Installation et Gestion
+
+Installation de Docker, Docker Compose et gestion de conteneurs avec déploiement d'une stack d'application.
+
+```yaml
+---
+- name: Installation et configuration Docker
+  hosts: docker_hosts
+  become: true
+  vars:
+    docker_compose_version: "2.24.0"
+    app_name: myapp
+    app_image: company/myapp:latest
+
+  tasks:
+    - name: Installer les dépendances Docker
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: true
+
+    - name: Ajouter la clé GPG Docker
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Ajouter le repository Docker
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Installer Docker Engine
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+        state: present
+        update_cache: true
+
+    - name: Démarrer et activer Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ajouter l'utilisateur au groupe docker
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    - name: Télécharger Docker Compose
+      ansible.builtin.get_url:
+        url: "https://github.com/docker/compose/releases/download/v{{ docker_compose_version }}/docker-compose-linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Créer le répertoire de l'application
+      ansible.builtin.file:
+        path: "/opt/{{ app_name }}"
+        state: directory
+        mode: '0755'
+
+    - name: Déployer le fichier docker-compose.yml
+      ansible.builtin.copy:
+        dest: "/opt/{{ app_name }}/docker-compose.yml"
+        content: |
+          version: '3.8'
+
+          services:
+            app:
+              image: {{ app_image }}
+              container_name: {{ app_name }}_app
+              restart: unless-stopped
+              ports:
+                - "3000:3000"
+              environment:
+                - NODE_ENV=production
+                - DATABASE_URL=postgresql://postgres:password@db:5432/appdb
+              depends_on:
+                - db
+                - redis
+              networks:
+                - app_network
+              volumes:
+                - app_data:/app/data
+
+            db:
+              image: postgres:15-alpine
+              container_name: {{ app_name }}_db
+              restart: unless-stopped
+              environment:
+                - POSTGRES_DB=appdb
+                - POSTGRES_USER=postgres
+                - POSTGRES_PASSWORD=password
+              volumes:
+                - db_data:/var/lib/postgresql/data
+              networks:
+                - app_network
+
+            redis:
+              image: redis:7-alpine
+              container_name: {{ app_name }}_redis
+              restart: unless-stopped
+              networks:
+                - app_network
+              volumes:
+                - redis_data:/data
+
+            nginx:
+              image: nginx:alpine
+              container_name: {{ app_name }}_nginx
+              restart: unless-stopped
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./nginx.conf:/etc/nginx/nginx.conf:ro
+                - ./ssl:/etc/nginx/ssl:ro
+              depends_on:
+                - app
+              networks:
+                - app_network
+
+          networks:
+            app_network:
+              driver: bridge
+
+          volumes:
+            app_data:
+            db_data:
+            redis_data:
+        mode: '0644'
+
+    - name: Déployer la configuration Nginx pour le reverse proxy
+      ansible.builtin.copy:
+        dest: "/opt/{{ app_name }}/nginx.conf"
+        content: |
+          events {
+              worker_connections 1024;
+          }
+
+          http {
+              upstream app_backend {
+                  server app:3000;
+              }
+
+              server {
+                  listen 80;
+                  server_name _;
+
+                  location / {
+                      proxy_pass http://app_backend;
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection 'upgrade';
+                      proxy_set_header Host $host;
+                      proxy_cache_bypass $http_upgrade;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
+              }
+          }
+        mode: '0644'
+
+    - name: Pull des images Docker
+      community.docker.docker_image:
+        name: "{{ app_image }}"
+        source: pull
+        force_source: true
+
+    - name: Démarrer la stack Docker Compose
+      community.docker.docker_compose_v2:
+        project_src: "/opt/{{ app_name }}"
+        state: present
+        pull: always
+
+    - name: Vérifier que les conteneurs sont en cours d'exécution
+      community.docker.docker_container_info:
+        name: "{{ app_name }}_app"
+      register: container_info
+      failed_when: container_info.container.State.Status != "running"
+
+    - name: Nettoyer les images Docker inutilisées
+      community.docker.docker_prune:
+        images: true
+        images_filters:
+          dangling: false
+```
+
+## Orchestration Kubernetes : Deployment et Services
+
+Déploiement d'une application sur un cluster Kubernetes avec service, ingress et gestion des secrets.
+
+```yaml
+---
+- name: Déploiement application sur Kubernetes
+  hosts: localhost
+  gather_facts: false
+  vars:
+    k8s_namespace: production
+    app_name: myapp
+    app_image: company/myapp:v1.2.3
+    app_replicas: 3
+    database_url: "{{ vault_database_url }}"
+
+  tasks:
+    - name: Créer le namespace
+      kubernetes.core.k8s:
+        name: "{{ k8s_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Créer le secret pour les credentials de l'application
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ app_name }}-secrets"
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          stringData:
+            DATABASE_URL: "{{ database_url }}"
+            API_KEY: "{{ vault_api_key }}"
+            JWT_SECRET: "{{ vault_jwt_secret }}"
+
+    - name: Créer le ConfigMap pour la configuration de l'application
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ app_name }}-config"
+            namespace: "{{ k8s_namespace }}"
+          data:
+            NODE_ENV: "production"
+            LOG_LEVEL: "info"
+            PORT: "3000"
+
+    - name: Déployer l'application (Deployment)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ app_name }}"
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: "{{ app_name }}"
+          spec:
+            replicas: "{{ app_replicas }}"
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
+            selector:
+              matchLabels:
+                app: "{{ app_name }}"
+            template:
+              metadata:
+                labels:
+                  app: "{{ app_name }}"
+              spec:
+                containers:
+                  - name: "{{ app_name }}"
+                    image: "{{ app_image }}"
+                    imagePullPolicy: Always
+                    ports:
+                      - containerPort: 3000
+                        name: http
+                    envFrom:
+                      - configMapRef:
+                          name: "{{ app_name }}-config"
+                      - secretRef:
+                          name: "{{ app_name }}-secrets"
+                    resources:
+                      requests:
+                        memory: "256Mi"
+                        cpu: "250m"
+                      limits:
+                        memory: "512Mi"
+                        cpu: "500m"
+                    livenessProbe:
+                      httpGet:
+                        path: /health
+                        port: 3000
+                      initialDelaySeconds: 30
+                      periodSeconds: 10
+                      timeoutSeconds: 5
+                      failureThreshold: 3
+                    readinessProbe:
+                      httpGet:
+                        path: /ready
+                        port: 3000
+                      initialDelaySeconds: 10
+                      periodSeconds: 5
+                      timeoutSeconds: 3
+                      failureThreshold: 3
+
+    - name: Créer le Service pour l'application
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: "{{ app_name }}-service"
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: "{{ app_name }}"
+          spec:
+            type: ClusterIP
+            selector:
+              app: "{{ app_name }}"
+            ports:
+              - name: http
+                port: 80
+                targetPort: 3000
+                protocol: TCP
+
+    - name: Créer l'Ingress pour exposer l'application
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: "{{ app_name }}-ingress"
+            namespace: "{{ k8s_namespace }}"
+            annotations:
+              kubernetes.io/ingress.class: "nginx"
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          spec:
+            tls:
+              - hosts:
+                  - app.example.com
+                secretName: "{{ app_name }}-tls"
+            rules:
+              - host: app.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: "{{ app_name }}-service"
+                          port:
+                            number: 80
+
+    - name: Créer un HorizontalPodAutoscaler
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: "{{ app_name }}-hpa"
+            namespace: "{{ k8s_namespace }}"
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: "{{ app_name }}"
+            minReplicas: 3
+            maxReplicas: 10
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 70
+              - type: Resource
+                resource:
+                  name: memory
+                  target:
+                    type: Utilization
+                    averageUtilization: 80
+
+    - name: Attendre que le déploiement soit prêt
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ app_name }}"
+        namespace: "{{ k8s_namespace }}"
+      register: deployment_info
+      until: >
+        deployment_info.resources[0].status.readyReplicas is defined and
+        deployment_info.resources[0].status.readyReplicas == app_replicas
+      retries: 30
+      delay: 10
+```
+
+## Hardening Sécurité : Configuration Avancée
+
+Renforcement de la sécurité d'un serveur : SSH hardening, configuration firewall avancée, fail2ban, et automatisation des mises à jour de sécurité.
+
+```yaml
+---
+- name: Hardening sécurité serveur
+  hosts: all_servers
+  become: true
+  vars:
+    ssh_port: 2222
+    allowed_ssh_users: "devops ansible"
+    fail2ban_maxretry: 3
+    fail2ban_bantime: 3600
+
+  tasks:
+    # SSH Hardening
+    - name: Sauvegarder la configuration SSH actuelle
+      ansible.builtin.copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
+        remote_src: true
+        mode: preserve
+
+    - name: Configurer SSH - Sécurité renforcée
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^#?Port', line: 'Port {{ ssh_port }}' }
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+        - { regexp: '^#?Protocol', line: 'Protocol 2' }
+        - { regexp: '^#?LogLevel', line: 'LogLevel VERBOSE' }
+        - { regexp: '^#?AllowUsers', line: 'AllowUsers {{ allowed_ssh_users }}' }
+      notify: Restart sshd
+
+    - name: Configurer les algorithmes cryptographiques SSH modernes
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        block: |
+          # Algorithmes cryptographiques modernes
+          KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
+          Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+          MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+        marker: "# {mark} ANSIBLE MANAGED SSH CRYPTO"
+      notify: Restart sshd
+
+    # Firewall UFW avancé
+    - name: Installer UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    - name: Réinitialiser UFW aux paramètres par défaut
+      community.general.ufw:
+        state: reset
+
+    - name: Configurer les règles UFW par défaut
+      community.general.ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+
+    - name: Autoriser SSH sur le port personnalisé
+      community.general.ufw:
+        rule: limit
+        port: "{{ ssh_port }}"
+        proto: tcp
+        comment: 'SSH with rate limiting'
+
+    - name: Autoriser HTTP et HTTPS
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - '80'
+        - '443'
+
+    - name: Bloquer les attaques par scan de ports
+      ansible.builtin.blockinfile:
+        path: /etc/ufw/before.rules
+        insertbefore: "# don't delete the 'COMMIT' line"
+        block: |
+          # Bloquer les scans de ports
+          -A ufw-before-input -p tcp --tcp-flags ALL NONE -j DROP
+          -A ufw-before-input -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+          -A ufw-before-input -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+          -A ufw-before-input -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+        marker: "# {mark} ANSIBLE MANAGED PORT SCAN PROTECTION"
+      notify: Reload ufw
+
+    - name: Activer UFW
+      community.general.ufw:
+        state: enabled
+
+    # Fail2Ban
+    - name: Installer Fail2Ban
+      ansible.builtin.apt:
+        name:
+          - fail2ban
+          - sendmail
+        state: present
+
+    - name: Créer la configuration locale Fail2Ban
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime = {{ fail2ban_bantime }}
+          findtime = 600
+          maxretry = {{ fail2ban_maxretry }}
+          destemail = admin@example.com
+          sendername = Fail2Ban
+          action = %(action_mwl)s
+
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          logpath = /var/log/auth.log
+          maxretry = {{ fail2ban_maxretry }}
+
+          [nginx-http-auth]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/error.log
+
+          [nginx-noscript]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/access.log
+
+          [nginx-badbots]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/access.log
+
+          [nginx-noproxy]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/access.log
+        mode: '0644'
+      notify: Restart fail2ban
+
+    # Mises à jour automatiques de sécurité
+    - name: Installer unattended-upgrades
+      ansible.builtin.apt:
+        name:
+          - unattended-upgrades
+          - apt-listchanges
+        state: present
+
+    - name: Configurer les mises à jour automatiques
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Mail "admin@example.com";
+          Unattended-Upgrade::MailReport "on-change";
+          Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
+          Unattended-Upgrade::Automatic-Reboot-Time "03:00";
+        mode: '0644'
+
+    - name: Activer les mises à jour automatiques
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        mode: '0644'
+
+    # Audit et surveillance
+    - name: Installer auditd pour la surveillance système
+      ansible.builtin.apt:
+        name: auditd
+        state: present
+
+    - name: Configurer auditd pour surveiller les fichiers sensibles
+      ansible.builtin.lineinfile:
+        path: /etc/audit/rules.d/audit.rules
+        line: "{{ item }}"
+        create: true
+        mode: '0640'
+      loop:
+        - '-w /etc/passwd -p wa -k passwd_changes'
+        - '-w /etc/group -p wa -k group_changes'
+        - '-w /etc/shadow -p wa -k shadow_changes'
+        - '-w /etc/sudoers -p wa -k sudoers_changes'
+        - '-w /etc/ssh/sshd_config -p wa -k sshd_config_changes'
+      notify: Restart auditd
+
+    # Protection contre les attaques par force brute
+    - name: Installer et configurer ClamAV
+      ansible.builtin.apt:
+        name:
+          - clamav
+          - clamav-daemon
+        state: present
+
+    - name: Mettre à jour la base de données ClamAV
+      ansible.builtin.command:
+        cmd: freshclam
+      changed_when: true
+      failed_when: false
+
+    # Désactiver les services inutiles
+    - name: Désactiver les services non nécessaires
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - avahi-daemon
+        - cups
+        - bluetooth
+      failed_when: false
+
+    # Sysctl hardening
+    - name: Appliquer les paramètres sysctl de sécurité
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+      loop:
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { name: 'kernel.randomize_va_space', value: '2' }
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: sshd
+        state: restarted
+
+    - name: Reload ufw
+      community.general.ufw:
+        state: reloaded
+
+    - name: Restart fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        state: restarted
+
+    - name: Restart auditd
+      ansible.builtin.service:
+        name: auditd
+        state: restarted
+```
+
+## Orchestration Multi-Tier : Architecture Complète
+
+Déploiement d'une architecture multi-tier avec load balancer, serveurs applicatifs et base de données avec haute disponibilité.
+
+```yaml
+---
+- name: Déploiement architecture multi-tier
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Installation commune pour tous les serveurs
+      ansible.builtin.import_tasks: common_setup.yml
+
+# Load Balancer (HAProxy)
+- name: Configuration Load Balancer
+  hosts: load_balancers
+  become: true
+  vars:
+    haproxy_version: "2.8"
+
+  tasks:
+    - name: Installer HAProxy
+      ansible.builtin.apt:
+        name: haproxy
+        state: present
+        update_cache: true
+
+    - name: Configurer HAProxy
+      ansible.builtin.template:
+        src: templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: '0644'
+        validate: 'haproxy -f %s -c'
+      notify: Reload haproxy
+
+    - name: Configuration HAProxy pour HA avec Keepalived
+      ansible.builtin.copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              log /dev/log local0
+              log /dev/log local1 notice
+              chroot /var/lib/haproxy
+              stats socket /run/haproxy/admin.sock mode 660 level admin
+              stats timeout 30s
+              user haproxy
+              group haproxy
+              daemon
+              maxconn 4096
+
+          defaults
+              log global
+              mode http
+              option httplog
+              option dontlognull
+              option forwardfor
+              option http-server-close
+              timeout connect 5000
+              timeout client 50000
+              timeout server 50000
+              errorfile 400 /etc/haproxy/errors/400.http
+              errorfile 403 /etc/haproxy/errors/403.http
+              errorfile 408 /etc/haproxy/errors/408.http
+              errorfile 500 /etc/haproxy/errors/500.http
+              errorfile 502 /etc/haproxy/errors/502.http
+              errorfile 503 /etc/haproxy/errors/503.http
+              errorfile 504 /etc/haproxy/errors/504.http
+
+          frontend http_front
+              bind *:80
+              bind *:443 ssl crt /etc/haproxy/certs/
+              redirect scheme https code 301 if !{ ssl_fc }
+              acl is_api path_beg /api
+              use_backend api_backend if is_api
+              default_backend web_backend
+
+          backend web_backend
+              balance roundrobin
+              option httpchk GET /health
+              http-check expect status 200
+              {% for host in groups['web_servers'] %}
+              server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:3000 check inter 2000 rise 2 fall 3
+              {% endfor %}
+
+          backend api_backend
+              balance leastconn
+              option httpchk GET /api/health
+              http-check expect status 200
+              {% for host in groups['api_servers'] %}
+              server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:8080 check inter 2000 rise 2 fall 3
+              {% endfor %}
+
+          listen stats
+              bind *:8404
+              stats enable
+              stats uri /stats
+              stats refresh 30s
+              stats auth admin:{{ vault_haproxy_stats_password }}
+        mode: '0644'
+      notify: Reload haproxy
+
+    - name: Installer Keepalived pour HA
+      ansible.builtin.apt:
+        name: keepalived
+        state: present
+
+    - name: Configurer Keepalived
+      ansible.builtin.template:
+        src: templates/keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        mode: '0644'
+      notify: Restart keepalived
+
+  handlers:
+    - name: Reload haproxy
+      ansible.builtin.service:
+        name: haproxy
+        state: reloaded
+
+    - name: Restart keepalived
+      ansible.builtin.service:
+        name: keepalived
+        state: restarted
+
+# Application Servers
+- name: Configuration serveurs applicatifs
+  hosts: web_servers:api_servers
+  become: true
+  vars:
+    app_user: appuser
+    app_dir: /opt/application
+
+  tasks:
+    - name: Créer l'utilisateur de l'application
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        system: true
+        shell: /bin/false
+        create_home: false
+
+    - name: Installer Node.js
+      ansible.builtin.apt:
+        name:
+          - nodejs
+          - npm
+        state: present
+
+    - name: Créer le répertoire de l'application
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Déployer l'application
+      ansible.builtin.git:
+        repo: https://github.com/company/app.git
+        dest: "{{ app_dir }}"
+        version: main
+        force: true
+      become_user: "{{ app_user }}"
+      notify: Restart application
+
+    - name: Installer les dépendances
+      community.general.npm:
+        path: "{{ app_dir }}"
+        production: true
+      become_user: "{{ app_user }}"
+
+    - name: Configurer le service systemd
+      ansible.builtin.template:
+        src: templates/app.service.j2
+        dest: /etc/systemd/system/app.service
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart application
+
+    - name: Configurer les variables d'environnement
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        content: |
+          NODE_ENV=production
+          DATABASE_URL={{ vault_database_url }}
+          REDIS_URL=redis://{{ groups['cache_servers'][0] }}:6379
+          API_KEY={{ vault_api_key }}
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0600'
+
+    - name: Activer et démarrer l'application
+      ansible.builtin.systemd:
+        name: app
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart application
+      ansible.builtin.systemd:
+        name: app
+        state: restarted
+
+# Database Servers (PostgreSQL HA avec replication)
+- name: Configuration base de données PostgreSQL HA
+  hosts: database_servers
+  become: true
+  vars:
+    postgres_version: "15"
+    postgres_password: "{{ vault_postgres_password }}"
+    replication_password: "{{ vault_replication_password }}"
+    is_master: "{{ inventory_hostname == groups['database_servers'][0] }}"
+
+  tasks:
+    - name: Installer PostgreSQL
+      ansible.builtin.apt:
+        name:
+          - "postgresql-{{ postgres_version }}"
+          - "postgresql-contrib-{{ postgres_version }}"
+          - python3-psycopg2
+        state: present
+        update_cache: true
+
+    - name: Configuration PostgreSQL Master
+      when: is_master
+      block:
+        - name: Configurer postgresql.conf pour la réplication
+          ansible.builtin.lineinfile:
+            path: "/etc/postgresql/{{ postgres_version }}/main/postgresql.conf"
+            regexp: "{{ item.regexp }}"
+            line: "{{ item.line }}"
+          loop:
+            - { regexp: '^#?wal_level', line: 'wal_level = replica' }
+            - { regexp: '^#?max_wal_senders', line: 'max_wal_senders = 3' }
+            - { regexp: '^#?wal_keep_size', line: 'wal_keep_size = 64' }
+            - { regexp: '^#?listen_addresses', line: "listen_addresses = '*'" }
+          notify: Restart postgresql
+
+        - name: Configurer pg_hba.conf pour la réplication
+          ansible.builtin.lineinfile:
+            path: "/etc/postgresql/{{ postgres_version }}/main/pg_hba.conf"
+            line: "host replication replicator {{ item }}/32 md5"
+          loop: "{{ groups['database_servers'][1:] | map('extract', hostvars, 'ansible_host') | list }}"
+          notify: Restart postgresql
+
+        - name: Créer l'utilisateur de réplication
+          community.postgresql.postgresql_user:
+            name: replicator
+            password: "{{ replication_password }}"
+            role_attr_flags: REPLICATION
+          become_user: postgres
+
+    - name: Configuration PostgreSQL Replica
+      when: not is_master
+      block:
+        - name: Arrêter PostgreSQL sur replica
+          ansible.builtin.service:
+            name: postgresql
+            state: stopped
+
+        - name: Nettoyer le répertoire de données
+          ansible.builtin.file:
+            path: "/var/lib/postgresql/{{ postgres_version }}/main"
+            state: absent
+
+        - name: Créer la base replica avec pg_basebackup
+          ansible.builtin.command:
+            cmd: >
+              pg_basebackup -h {{ hostvars[groups['database_servers'][0]]['ansible_host'] }}
+              -D /var/lib/postgresql/{{ postgres_version }}/main
+              -U replicator -v -P -W
+          become_user: postgres
+          environment:
+            PGPASSWORD: "{{ replication_password }}"
+          changed_when: true
+
+        - name: Créer le fichier standby.signal
+          ansible.builtin.file:
+            path: "/var/lib/postgresql/{{ postgres_version }}/main/standby.signal"
+            state: touch
+            owner: postgres
+            group: postgres
+            mode: '0600'
+
+        - name: Démarrer PostgreSQL sur replica
+          ansible.builtin.service:
+            name: postgresql
+            state: started
+
+  handlers:
+    - name: Restart postgresql
+      ansible.builtin.service:
+        name: postgresql
+        state: restarted
+
+# Cache Servers (Redis)
+- name: Configuration serveurs de cache Redis
+  hosts: cache_servers
+  become: true
+
+  tasks:
+    - name: Installer Redis
+      ansible.builtin.apt:
+        name:
+          - redis-server
+          - redis-tools
+        state: present
+        update_cache: true
+
+    - name: Configurer Redis pour écouter sur toutes les interfaces
+      ansible.builtin.lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^bind', line: 'bind 0.0.0.0' }
+        - { regexp: '^# maxmemory', line: 'maxmemory 2gb' }
+        - { regexp: '^# maxmemory-policy', line: 'maxmemory-policy allkeys-lru' }
+      notify: Restart redis
+
+    - name: Activer la persistence Redis
+      ansible.builtin.lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^save'
+        line: 'save 900 1'
+      notify: Restart redis
+
+  handlers:
+    - name: Restart redis
+      ansible.builtin.service:
+        name: redis-server
+        state: restarted
+```
+
+## Backup et Disaster Recovery
+
+Stratégie complète de sauvegarde et de restauration avec snapshots, sauvegarde de base de données et synchronisation off-site.
+
+```yaml
+---
+- name: Configuration système de backup et disaster recovery
+  hosts: all
+  become: true
+  vars:
+    backup_dir: /var/backups
+    remote_backup_host: backup.example.com
+    remote_backup_user: backup
+    retention_days: 30
+
+  tasks:
+    - name: Installer les outils de backup
+      ansible.builtin.apt:
+        name:
+          - rsync
+          - duplicity
+          - python3-boto3
+          - postgresql-client
+          - mysql-client
+        state: present
+        update_cache: true
+
+    - name: Créer le répertoire de backup local
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Créer le script de backup PostgreSQL
+      ansible.builtin.copy:
+        dest: /usr/local/bin/backup-postgres.sh
+        content: |
+          #!/bin/bash
+          set -e
+
+          BACKUP_DIR="{{ backup_dir }}/postgres"
+          DATE=$(date +%Y%m%d_%H%M%S)
+          FILENAME="postgres_backup_${DATE}.sql.gz"
+
+          mkdir -p ${BACKUP_DIR}
+
+          # Backup de toutes les bases de données
+          pg_dumpall -U postgres | gzip > ${BACKUP_DIR}/${FILENAME}
+
+          # Vérifier l'intégrité
+          if [ $? -eq 0 ]; then
+              echo "Backup PostgreSQL réussi: ${FILENAME}"
+
+              # Nettoyer les anciens backups
+              find ${BACKUP_DIR} -name "postgres_backup_*.sql.gz" -mtime +{{ retention_days }} -delete
+
+              # Synchroniser vers le serveur distant
+              rsync -avz --delete ${BACKUP_DIR}/ {{ remote_backup_user }}@{{ remote_backup_host }}:/backups/postgres/
+          else
+              echo "Erreur lors du backup PostgreSQL"
+              exit 1
+          fi
+        mode: '0755'
+
+    - name: Créer le script de backup MySQL
+      ansible.builtin.copy:
+        dest: /usr/local/bin/backup-mysql.sh
+        content: |
+          #!/bin/bash
+          set -e
+
+          BACKUP_DIR="{{ backup_dir }}/mysql"
+          DATE=$(date +%Y%m%d_%H%M%S)
+          FILENAME="mysql_backup_${DATE}.sql.gz"
+
+          mkdir -p ${BACKUP_DIR}
+
+          # Backup de toutes les bases de données
+          mysqldump --all-databases --single-transaction --quick --lock-tables=false \
+              | gzip > ${BACKUP_DIR}/${FILENAME}
+
+          if [ $? -eq 0 ]; then
+              echo "Backup MySQL réussi: ${FILENAME}"
+
+              find ${BACKUP_DIR} -name "mysql_backup_*.sql.gz" -mtime +{{ retention_days }} -delete
+
+              rsync -avz --delete ${BACKUP_DIR}/ {{ remote_backup_user }}@{{ remote_backup_host }}:/backups/mysql/
+          else
+              echo "Erreur lors du backup MySQL"
+              exit 1
+          fi
+        mode: '0755'
+
+    - name: Créer le script de backup des fichiers applicatifs
+      ansible.builtin.copy:
+        dest: /usr/local/bin/backup-files.sh
+        content: |
+          #!/bin/bash
+          set -e
+
+          BACKUP_DIR="{{ backup_dir }}/files"
+          DATE=$(date +%Y%m%d_%H%M%S)
+
+          mkdir -p ${BACKUP_DIR}
+
+          # Backup des répertoires importants
+          tar -czf ${BACKUP_DIR}/app_files_${DATE}.tar.gz \
+              /var/www \
+              /opt/application \
+              /etc/nginx \
+              /etc/apache2 \
+              2>/dev/null || true
+
+          if [ $? -eq 0 ]; then
+              echo "Backup fichiers réussi"
+
+              find ${BACKUP_DIR} -name "app_files_*.tar.gz" -mtime +{{ retention_days }} -delete
+
+              rsync -avz --delete ${BACKUP_DIR}/ {{ remote_backup_user }}@{{ remote_backup_host }}:/backups/files/
+          else
+              echo "Erreur lors du backup des fichiers"
+              exit 1
+          fi
+        mode: '0755'
+
+    - name: Créer le script de backup vers S3 (AWS)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/backup-s3.sh
+        content: |
+          #!/bin/bash
+          set -e
+
+          BACKUP_DIR="{{ backup_dir }}"
+          S3_BUCKET="s3://company-backups"
+          AWS_PROFILE="backup"
+
+          # Synchroniser tous les backups vers S3
+          aws s3 sync ${BACKUP_DIR}/ ${S3_BUCKET}/$(hostname)/ \
+              --profile ${AWS_PROFILE} \
+              --storage-class STANDARD_IA \
+              --delete
+
+          if [ $? -eq 0 ]; then
+              echo "Backup S3 réussi"
+          else
+              echo "Erreur lors du backup S3"
+              exit 1
+          fi
+        mode: '0755'
+
+    - name: Créer le script de restauration PostgreSQL
+      ansible.builtin.copy:
+        dest: /usr/local/bin/restore-postgres.sh
+        content: |
+          #!/bin/bash
+          set -e
+
+          if [ -z "$1" ]; then
+              echo "Usage: $0 <backup_file>"
+              exit 1
+          fi
+
+          BACKUP_FILE=$1
+
+          echo "Attention: Cette opération va restaurer la base de données"
+          echo "Backup file: ${BACKUP_FILE}"
+          read -p "Continuer? (yes/no): " confirm
+
+          if [ "$confirm" != "yes" ]; then
+              echo "Restauration annulée"
+              exit 0
+          fi
+
+          # Arrêter les applications
+          systemctl stop app || true
+
+          # Restaurer la base de données
+          gunzip < ${BACKUP_FILE} | psql -U postgres
+
+          if [ $? -eq 0 ]; then
+              echo "Restauration PostgreSQL réussie"
+              systemctl start app
+          else
+              echo "Erreur lors de la restauration"
+              exit 1
+          fi
+        mode: '0755'
+
+    - name: Configurer les tâches cron pour les backups
+      ansible.builtin.cron:
+        name: "{{ item.name }}"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+        job: "{{ item.job }}"
+        user: root
+      loop:
+        - name: "Backup PostgreSQL quotidien"
+          minute: "0"
+          hour: "2"
+          job: "/usr/local/bin/backup-postgres.sh >> /var/log/backup-postgres.log 2>&1"
+        - name: "Backup MySQL quotidien"
+          minute: "0"
+          hour: "3"
+          job: "/usr/local/bin/backup-mysql.sh >> /var/log/backup-mysql.log 2>&1"
+        - name: "Backup fichiers quotidien"
+          minute: "0"
+          hour: "4"
+          job: "/usr/local/bin/backup-files.sh >> /var/log/backup-files.log 2>&1"
+        - name: "Backup S3 quotidien"
+          minute: "0"
+          hour: "5"
+          job: "/usr/local/bin/backup-s3.sh >> /var/log/backup-s3.log 2>&1"
+
+    - name: Créer le script de monitoring des backups
+      ansible.builtin.copy:
+        dest: /usr/local/bin/check-backups.sh
+        content: |
+          #!/bin/bash
+
+          BACKUP_DIR="{{ backup_dir }}"
+          MAX_AGE_HOURS=25
+
+          # Vérifier l'âge du dernier backup
+          check_backup() {
+              local backup_type=$1
+              local pattern=$2
+
+              latest_backup=$(find ${BACKUP_DIR}/${backup_type} -name "${pattern}" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2)
+
+              if [ -z "$latest_backup" ]; then
+                  echo "CRITICAL: Aucun backup ${backup_type} trouvé"
+                  return 2
+              fi
+
+              age_hours=$(( ($(date +%s) - $(stat -c %Y "$latest_backup")) / 3600 ))
+
+              if [ $age_hours -gt $MAX_AGE_HOURS ]; then
+                  echo "WARNING: Backup ${backup_type} trop ancien (${age_hours}h)"
+                  return 1
+              else
+                  echo "OK: Backup ${backup_type} récent (${age_hours}h)"
+                  return 0
+              fi
+          }
+
+          exit_code=0
+
+          check_backup "postgres" "postgres_backup_*.sql.gz" || exit_code=$?
+          check_backup "mysql" "mysql_backup_*.sql.gz" || exit_code=$?
+          check_backup "files" "app_files_*.tar.gz" || exit_code=$?
+
+          exit $exit_code
+        mode: '0755'
+
+    - name: Configurer la surveillance des backups
+      ansible.builtin.cron:
+        name: "Vérification backups"
+        minute: "0"
+        hour: "12"
+        job: "/usr/local/bin/check-backups.sh | mail -s 'Backup Status' admin@example.com"
+        user: root
+
+    - name: Configurer la clé SSH pour rsync distant
+      ansible.builtin.copy:
+        dest: /root/.ssh/backup_key
+        content: "{{ vault_backup_ssh_key }}"
+        mode: '0600'
+
+    - name: Tester la connectivité au serveur de backup
+      ansible.builtin.command:
+        cmd: ssh -i /root/.ssh/backup_key {{ remote_backup_user }}@{{ remote_backup_host }} "echo 'Connection OK'"
+      register: ssh_test
+      changed_when: false
+      failed_when: false
+
+    - name: Afficher le résultat du test de connexion
+      ansible.builtin.debug:
+        msg: "Test connexion backup: {{ ssh_test.stdout if ssh_test.rc == 0 else 'FAILED' }}"
+```
+
+## Terraform + Ansible : Provisioning Infrastructure + Configuration
+
+Intégration de Terraform pour le provisioning d'infrastructure et Ansible pour la configuration des serveurs.
+
+```yaml
+---
+# Playbook exécuté après terraform apply
+- name: Configuration post-provisioning Terraform
+  hosts: localhost
+  gather_facts: false
+  vars:
+    terraform_output_file: terraform_output.json
+
+  tasks:
+    - name: Récupérer les outputs Terraform
+      ansible.builtin.command:
+        cmd: terraform output -json
+        chdir: ../terraform
+      register: terraform_output
+      changed_when: false
+
+    - name: Parser les outputs Terraform
+      ansible.builtin.set_fact:
+        tf_output: "{{ terraform_output.stdout | from_json }}"
+
+    - name: Créer l'inventaire dynamique depuis Terraform
+      ansible.builtin.copy:
+        dest: inventory/terraform_hosts.yml
+        content: |
+          all:
+            children:
+              web_servers:
+                hosts:
+                  {% for instance in tf_output.web_server_ips.value %}
+                  web-{{ loop.index }}:
+                    ansible_host: {{ instance }}
+                    ansible_user: ubuntu
+                    ansible_ssh_private_key_file: ~/.ssh/terraform_key
+                  {% endfor %}
+
+              database_servers:
+                hosts:
+                  {% for instance in tf_output.database_server_ips.value %}
+                  db-{{ loop.index }}:
+                    ansible_host: {{ instance }}
+                    ansible_user: ubuntu
+                    ansible_ssh_private_key_file: ~/.ssh/terraform_key
+                  {% endfor %}
+
+              load_balancers:
+                hosts:
+                  {% for instance in tf_output.lb_server_ips.value %}
+                  lb-{{ loop.index }}:
+                    ansible_host: {{ instance }}
+                    ansible_user: ubuntu
+                    ansible_ssh_private_key_file: ~/.ssh/terraform_key
+                  {% endfor %}
+
+            vars:
+              aws_region: {{ tf_output.aws_region.value }}
+              vpc_id: {{ tf_output.vpc_id.value }}
+              environment: {{ tf_output.environment.value }}
+        mode: '0644'
+
+    - name: Attendre que les serveurs soient accessibles
+      ansible.builtin.wait_for:
+        host: "{{ item }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      loop: "{{ tf_output.all_server_ips.value }}"
+
+- name: Configuration initiale des serveurs provisionnés
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Mettre à jour le cache des packages
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Installer Python3 et pip
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-apt
+        state: present
+
+    - name: Configurer le hostname
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Ajouter les tags Terraform comme facts
+      ansible.builtin.set_fact:
+        terraform_tags: "{{ hostvars[inventory_hostname].terraform_tags | default({}) }}"
+
+    - name: Configurer les outils de monitoring (CloudWatch)
+      when: aws_region is defined
+      block:
+        - name: Télécharger l'agent CloudWatch
+          ansible.builtin.get_url:
+            url: https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+            dest: /tmp/amazon-cloudwatch-agent.deb
+            mode: '0644'
+
+        - name: Installer l'agent CloudWatch
+          ansible.builtin.apt:
+            deb: /tmp/amazon-cloudwatch-agent.deb
+
+        - name: Configurer l'agent CloudWatch
+          ansible.builtin.copy:
+            dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+            content: |
+              {
+                "metrics": {
+                  "namespace": "{{ environment | upper }}/EC2",
+                  "metrics_collected": {
+                    "cpu": {
+                      "measurement": [
+                        {"name": "cpu_usage_idle", "rename": "CPU_IDLE", "unit": "Percent"},
+                        {"name": "cpu_usage_iowait", "rename": "CPU_IOWAIT", "unit": "Percent"}
+                      ],
+                      "totalcpu": false
+                    },
+                    "disk": {
+                      "measurement": [
+                        {"name": "used_percent", "rename": "DISK_USED", "unit": "Percent"}
+                      ],
+                      "resources": ["*"]
+                    },
+                    "mem": {
+                      "measurement": [
+                        {"name": "mem_used_percent", "rename": "MEM_USED", "unit": "Percent"}
+                      ]
+                    }
+                  }
+                },
+                "logs": {
+                  "logs_collected": {
+                    "files": {
+                      "collect_list": [
+                        {
+                          "file_path": "/var/log/syslog",
+                          "log_group_name": "/{{ environment }}/syslog",
+                          "log_stream_name": "{instance_id}"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            mode: '0644'
+
+        - name: Démarrer l'agent CloudWatch
+          ansible.builtin.service:
+            name: amazon-cloudwatch-agent
+            state: started
+            enabled: true
+
+- name: Appliquer les configurations spécifiques par type de serveur
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Importer les rôles spécifiques
+      ansible.builtin.include_role:
+        name: "{{ item }}"
+      loop: "{{ server_roles | default([]) }}"
+
+# Exemple de fichier Terraform companion (terraform/main.tf)
+# Ce fichier Terraform crée l'infrastructure avant l'exécution d'Ansible
+```
+
+Exemple de fichier Terraform correspondant (`terraform/main.tf`) :
+
+```hcl
+# terraform/main.tf
+terraform {
+  required_version = ">= 1.0"
+
+  backend "s3" {
+    bucket = "company-terraform-state"
+    key    = "production/infrastructure.tfstate"
+    region = "eu-west-1"
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# VPC et Networking
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
+
+  name = "${var.environment}-vpc"
+  cidr = "10.0.0.0/16"
+
+  azs             = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+  enable_nat_gateway = true
+  enable_vpn_gateway = false
+
+  tags = var.common_tags
+}
+
+# Security Groups
+resource "aws_security_group" "web" {
+  name_prefix = "${var.environment}-web-"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# Web Servers
+resource "aws_instance" "web" {
+  count         = var.web_server_count
+  ami           = data.aws_ami.ubuntu.id
+  instance_type = "t3.medium"
+  subnet_id     = module.vpc.public_subnets[count.index % length(module.vpc.public_subnets)]
+
+  vpc_security_group_ids = [aws_security_group.web.id]
+  key_name              = aws_key_pair.deployer.key_name
+
+  tags = merge(var.common_tags, {
+    Name = "${var.environment}-web-${count.index + 1}"
+    Role = "web"
+  })
+
+  # Provisioner local-exec pour lancer Ansible
+  provisioner "local-exec" {
+    command = "sleep 60 && ansible-playbook -i ../ansible/inventory/terraform_hosts.yml ../ansible/site.yml"
+  }
+}
+
+# Outputs pour Ansible
+output "web_server_ips" {
+  value = aws_instance.web[*].public_ip
+}
+
+output "all_server_ips" {
+  value = concat(
+    aws_instance.web[*].public_ip,
+    aws_instance.db[*].private_ip,
+    aws_instance.lb[*].public_ip
+  )
+}
+
+output "vpc_id" {
+  value = module.vpc.vpc_id
+}
+
+output "aws_region" {
+  value = var.aws_region
+}
+
+output "environment" {
+  value = var.environment
+}
+```
+
+Script d'orchestration (`deploy.sh`) :
+
+```bash
+#!/bin/bash
+set -e
+
+echo "=== Déploiement Infrastructure + Configuration ==="
+
+# 1. Provisioning Terraform
+echo "Étape 1: Provisioning infrastructure avec Terraform..."
+cd terraform
+terraform init
+terraform plan -out=tfplan
+terraform apply tfplan
+
+# 2. Génération de l'inventaire Ansible
+echo "Étape 2: Génération inventaire Ansible..."
+cd ../ansible
+ansible-playbook generate_inventory.yml
+
+# 3. Configuration avec Ansible
+echo "Étape 3: Configuration des serveurs avec Ansible..."
+ansible-playbook -i inventory/terraform_hosts.yml site.yml
+
+# 4. Vérification
+echo "Étape 4: Vérification du déploiement..."
+ansible-playbook -i inventory/terraform_hosts.yml verify.yml
+
+echo "=== Déploiement terminé avec succès ==="
+```
+
+Ces exemples couvrent les cas d'usage les plus courants en production. Chaque playbook peut être adapté selon vos besoins spécifiques et votre infrastructure.

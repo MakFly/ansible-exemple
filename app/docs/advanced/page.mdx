@@ -1,0 +1,1241 @@
+# Patterns Avancés
+
+Cette section couvre les patterns avancés d'Ansible pour des cas d'usage complexes : délégation d'exécution, déploiements progressifs, stratégies d'exécution, tâches asynchrones et bien plus.
+
+## Délégation d'exécution
+
+### delegate_to
+
+Permet d'exécuter une tâche sur un hôte différent de celui ciblé par le play.
+
+```yaml
+---
+- name: Gestion avec délégation
+  hosts: webservers
+  tasks:
+    - name: Récupérer des métriques depuis le serveur de monitoring
+      ansible.builtin.uri:
+        url: "https://monitoring.example.com/api/metrics/{{ inventory_hostname }}"
+        method: GET
+      delegate_to: localhost
+      register: metrics
+
+    - name: Créer un snapshot de la base de données
+      community.postgresql.postgresql_db:
+        name: production
+        state: dump
+        target: "/backup/{{ inventory_hostname }}-{{ ansible_date_time.iso8601 }}.sql"
+      delegate_to: db-primary.example.com
+
+    - name: Mettre à jour le load balancer
+      ansible.builtin.uri:
+        url: "https://lb.example.com/api/pool/remove"
+        method: POST
+        body_format: json
+        body:
+          server: "{{ inventory_hostname }}"
+      delegate_to: localhost
+      when: maintenance_mode | default(false)
+```
+
+### local_action
+
+Syntaxe alternative pour `delegate_to: localhost`.
+
+```yaml
+---
+- name: Actions locales
+  hosts: all
+  tasks:
+    - name: Attendre que le port SSH soit disponible
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      delegate_to: localhost
+
+    # Équivalent avec local_action
+    - name: Vérifier la connectivité
+      local_action:
+        module: ansible.builtin.wait_for
+        host: "{{ inventory_hostname }}"
+        port: 22
+        state: started
+
+    - name: Enregistrer le déploiement dans un système externe
+      local_action:
+        module: ansible.builtin.uri
+        url: "https://deployments.example.com/api/v1/deploy"
+        method: POST
+        body_format: json
+        body:
+          host: "{{ inventory_hostname }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          status: "started"
+```
+
+### Délégation avec facts
+
+```yaml
+---
+- name: Délégation avec accès aux facts de plusieurs hôtes
+  hosts: webservers
+  tasks:
+    - name: Configurer le load balancer avec les IPs des webservers
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+      delegate_to: loadbalancer.example.com
+      run_once: true
+      vars:
+        backend_servers: "{{ groups['webservers'] }}"
+
+    - name: Collecter les facts du serveur de base de données
+      ansible.builtin.setup:
+      delegate_to: "{{ groups['database'][0] }}"
+      delegate_facts: true
+
+    - name: Utiliser les facts délégués
+      ansible.builtin.debug:
+        msg: "DB Server has {{ hostvars[groups['database'][0]]['ansible_processor_vcpus'] }} vCPUs"
+```
+
+## Déploiements progressifs (Rolling Updates)
+
+### serial
+
+Contrôle le nombre d'hôtes traités simultanément.
+
+```yaml
+---
+- name: Déploiement progressif des webservers
+  hosts: webservers
+  serial: 2  # Traiter 2 hôtes à la fois
+  max_fail_percentage: 25
+  tasks:
+    - name: Retirer du load balancer
+      ansible.builtin.uri:
+        url: "https://lb.example.com/api/pool/remove"
+        method: POST
+        body_format: json
+        body:
+          server: "{{ inventory_hostname }}"
+      delegate_to: localhost
+
+    - name: Arrêter le service
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+
+    - name: Déployer la nouvelle version
+      ansible.builtin.copy:
+        src: /builds/app-{{ version }}/
+        dest: /var/www/app/
+        remote_src: false
+      notify: restart nginx
+
+    - name: Démarrer le service
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+
+    - name: Attendre que l'application soit prête
+      ansible.builtin.uri:
+        url: "http://{{ inventory_hostname }}/health"
+        status_code: 200
+      retries: 5
+      delay: 10
+
+    - name: Remettre dans le load balancer
+      ansible.builtin.uri:
+        url: "https://lb.example.com/api/pool/add"
+        method: POST
+        body_format: json
+        body:
+          server: "{{ inventory_hostname }}"
+      delegate_to: localhost
+
+  handlers:
+    - name: restart nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+```
+
+### Serial avec pourcentages et progression
+
+```yaml
+---
+- name: Déploiement canary puis progressif
+  hosts: production
+  serial:
+    - 1          # Premier hôte (canary)
+    - 10%        # Puis 10% des hôtes
+    - 25%        # Puis 25% des hôtes
+    - 100%       # Enfin tous les hôtes restants
+  max_fail_percentage: 10
+  tasks:
+    - name: Déployer l'application
+      ansible.builtin.include_role:
+        name: app_deploy
+
+    - name: Exécuter les smoke tests
+      ansible.builtin.command: /opt/app/bin/smoke-test.sh
+      changed_when: false
+
+    - name: Notifier le succès du batch
+      ansible.builtin.debug:
+        msg: "Batch {{ ansible_play_batch }} déployé avec succès"
+      run_once: true
+```
+
+### max_fail_percentage
+
+```yaml
+---
+- name: Déploiement avec tolérance aux échecs
+  hosts: webservers
+  serial: 5
+  max_fail_percentage: 20  # Continuer si moins de 20% échouent
+  any_errors_fatal: false
+  tasks:
+    - name: Mettre à jour le package
+      ansible.builtin.apt:
+        name: myapp
+        state: latest
+        update_cache: true
+      register: update_result
+      failed_when:
+        - update_result is failed
+        - "'No such package' not in update_result.msg"
+
+    - name: Vérifier la version installée
+      ansible.builtin.command: myapp --version
+      changed_when: false
+      register: version_check
+
+    - name: Échouer si version incorrecte
+      ansible.builtin.fail:
+        msg: "Version incorrecte détectée"
+      when: expected_version not in version_check.stdout
+```
+
+## Stratégies d'exécution
+
+### linear (stratégie par défaut)
+
+Tous les hôtes exécutent chaque tâche avant de passer à la suivante.
+
+```yaml
+---
+- name: Stratégie linear (défaut)
+  hosts: all
+  strategy: linear
+  tasks:
+    - name: Tâche 1
+      ansible.builtin.debug:
+        msg: "Tous les hôtes exécutent ceci en premier"
+
+    - name: Tâche 2
+      ansible.builtin.debug:
+        msg: "Puis tous exécutent ceci"
+```
+
+### free
+
+Chaque hôte exécute les tâches aussi rapidement que possible, sans attendre les autres.
+
+```yaml
+---
+- name: Stratégie free pour performances maximales
+  hosts: all
+  strategy: free
+  tasks:
+    - name: Télécharger un gros fichier
+      ansible.builtin.get_url:
+        url: "https://releases.example.com/package-{{ version }}.tar.gz"
+        dest: /tmp/package.tar.gz
+      # Les hôtes rapides ne vont pas attendre les lents
+
+    - name: Extraire l'archive
+      ansible.builtin.unarchive:
+        src: /tmp/package.tar.gz
+        dest: /opt/app/
+        remote_src: true
+
+    - name: Configurer l'application
+      ansible.builtin.template:
+        src: config.j2
+        dest: /opt/app/config.yml
+```
+
+### host_pinned
+
+Les hôtes exécutent les tâches aussi vite que possible, mais les includes/blocks sont épinglés au worker.
+
+```yaml
+---
+- name: Stratégie host_pinned
+  hosts: all
+  strategy: host_pinned
+  tasks:
+    - name: Bloc de tâches liées
+      block:
+        - name: Préparer l'environnement
+          ansible.builtin.file:
+            path: /tmp/deployment-{{ ansible_date_time.epoch }}
+            state: directory
+
+        - name: Tâches de déploiement
+          ansible.builtin.include_tasks: deploy_tasks.yml
+
+        - name: Vérifications post-déploiement
+          ansible.builtin.include_tasks: verify_tasks.yml
+```
+
+### debug
+
+Stratégie interactive pour le débogage.
+
+```yaml
+---
+- name: Stratégie debug
+  hosts: problematic_server
+  strategy: debug
+  tasks:
+    - name: Cette tâche peut être déboguée interactivement
+      ansible.builtin.command: /opt/scripts/problematic-script.sh
+```
+
+### Comparaison des stratégies
+
+```yaml
+---
+- name: Démo des différentes stratégies
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Bloc avec stratégie linear
+      block:
+        - name: Début du bloc linear
+          ansible.builtin.debug:
+            msg: "Linear: tout le monde attend"
+        - name: Pause pour démo
+          ansible.builtin.pause:
+            seconds: "{{ 5 | random }}"
+      tags: linear
+
+    - name: Bloc avec stratégie free
+      block:
+        - ansible.builtin.meta: end_play
+      when: false
+
+- name: Play avec stratégie free
+  hosts: all
+  strategy: free
+  gather_facts: false
+  tasks:
+    - name: Début du play free
+      ansible.builtin.debug:
+        msg: "Free: chacun pour soi"
+    - name: Pause variable
+      ansible.builtin.pause:
+        seconds: "{{ 5 | random }}"
+  tags: free
+```
+
+## Tâches asynchrones
+
+### async et poll
+
+Permet d'exécuter des tâches longues sans bloquer.
+
+```yaml
+---
+- name: Tâches asynchrones
+  hosts: webservers
+  tasks:
+    - name: Lancer une sauvegarde longue (avec polling)
+      ansible.builtin.command: /usr/local/bin/backup-full.sh
+      async: 3600      # Timeout de 1 heure
+      poll: 10         # Vérifier toutes les 10 secondes
+      register: backup_result
+
+    - name: Continuer avec d'autres tâches
+      ansible.builtin.debug:
+        msg: "La sauvegarde s'exécute en arrière-plan"
+
+    - name: Afficher le résultat de la sauvegarde
+      ansible.builtin.debug:
+        var: backup_result
+```
+
+### Fire and forget (poll: 0)
+
+```yaml
+---
+- name: Fire and forget
+  hosts: all
+  tasks:
+    - name: Lancer une mise à jour système (fire and forget)
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: true
+      async: 7200
+      poll: 0          # Ne pas attendre
+      register: update_job
+
+    - name: Enregistrer le job ID pour suivi ultérieur
+      ansible.builtin.set_fact:
+        update_job_id: "{{ update_job.ansible_job_id }}"
+
+    - name: Continuer avec d'autres tâches immédiatement
+      ansible.builtin.debug:
+        msg: "La mise à jour s'exécute en arrière-plan, job ID: {{ update_job_id }}"
+```
+
+### async_status
+
+Vérifier le statut d'une tâche asynchrone lancée avec `poll: 0`.
+
+```yaml
+---
+- name: Gestion avancée de tâches asynchrones
+  hosts: databases
+  tasks:
+    - name: Lancer plusieurs exports de bases de données
+      ansible.builtin.command: pg_dump {{ item }} -f /backup/{{ item }}.sql
+      async: 1800
+      poll: 0
+      loop:
+        - database1
+        - database2
+        - database3
+      register: db_exports
+
+    - name: Faire d'autres tâches pendant les exports
+      ansible.builtin.apt:
+        name: postgresql-client
+        state: latest
+
+    - name: Attendre que tous les exports soient terminés
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ db_exports.results }}"
+      register: export_status
+      until: export_status.finished
+      retries: 120
+      delay: 15
+
+    - name: Vérifier les résultats
+      ansible.builtin.debug:
+        msg: "Export {{ item.item }} terminé avec rc={{ item.rc }}"
+      loop: "{{ export_status.results }}"
+      when: item.rc == 0
+```
+
+### Pattern avancé : parallélisme contrôlé
+
+```yaml
+---
+- name: Traitement parallèle avec async
+  hosts: workers
+  tasks:
+    - name: Lancer le traitement de plusieurs fichiers
+      ansible.builtin.command: /opt/scripts/process-file.sh {{ item }}
+      async: 600
+      poll: 0
+      loop: "{{ files_to_process }}"
+      register: processing_jobs
+
+    - name: Attendre que 80% des jobs soient terminés
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ processing_jobs.results }}"
+      register: job_status
+      until:
+        - job_status.results | selectattr('finished', 'equalto', true) | list | length >= (job_status.results | length * 0.8)
+      retries: 60
+      delay: 10
+
+    - name: Continuer si suffisamment de jobs ont réussi
+      ansible.builtin.debug:
+        msg: "Seuil atteint, poursuite du déploiement"
+```
+
+## include vs import
+
+### import_* (statique)
+
+Résolu au moment du parsing. Les conditions et tags s'appliquent à toutes les tâches importées.
+
+```yaml
+---
+- name: Utilisation d'import (statique)
+  hosts: all
+  tasks:
+    - name: Importer des tâches statiquement
+      ansible.builtin.import_tasks: common_tasks.yml
+      when: ansible_os_family == "Debian"
+      tags:
+        - setup
+      # Le when et les tags s'appliquent à TOUTES les tâches de common_tasks.yml
+
+    - name: Importer un playbook complet
+      ansible.builtin.import_playbook: database_setup.yml
+      when: "'databases' in group_names"
+
+    - name: Importer un role statiquement
+      ansible.builtin.import_role:
+        name: nginx
+      vars:
+        nginx_port: 8080
+```
+
+### include_* (dynamique)
+
+Résolu au moment de l'exécution. Permet l'utilisation de variables et de boucles.
+
+```yaml
+---
+- name: Utilisation d'include (dynamique)
+  hosts: all
+  tasks:
+    - name: Inclure des tâches dynamiquement
+      ansible.builtin.include_tasks: "{{ ansible_distribution }}_setup.yml"
+      # Le fichier à inclure est déterminé à l'exécution
+
+    - name: Inclure des tâches avec boucle
+      ansible.builtin.include_tasks: deploy_app.yml
+      loop:
+        - frontend
+        - backend
+        - worker
+      vars:
+        app_name: "{{ item }}"
+
+    - name: Inclure conditionnellement
+      ansible.builtin.include_tasks: security_hardening.yml
+      when:
+        - environment == "production"
+        - security_level == "high"
+
+    - name: Inclure un role dynamiquement
+      ansible.builtin.include_role:
+        name: "{{ database_type }}"
+      vars:
+        db_version: "{{ lookup('env', 'DB_VERSION') }}"
+```
+
+### Différences clés et patterns
+
+```yaml
+---
+- name: Comparaison import vs include
+  hosts: all
+  vars:
+    deployment_type: "blue_green"
+  tasks:
+    # IMPORT : résolu au parsing, ne peut pas utiliser de variables
+    - name: Import statique (connu au parsing)
+      ansible.builtin.import_tasks: base_setup.yml
+      tags: always  # Le tag s'applique à toutes les tâches importées
+
+    # INCLUDE : résolu à l'exécution, peut utiliser des variables
+    - name: Include dynamique (résolu à l'exécution)
+      ansible.builtin.include_tasks: "deploy_{{ deployment_type }}.yml"
+      tags: deploy  # Le tag s'applique seulement à l'include
+
+    # IMPORT : impossible avec loop
+    # Ceci générerait une erreur :
+    # - ansible.builtin.import_tasks: config.yml
+    #   loop: [1, 2, 3]
+
+    # INCLUDE : fonctionne avec loop
+    - name: Include avec boucle
+      ansible.builtin.include_tasks: configure_service.yml
+      loop:
+        - name: api
+          port: 8000
+        - name: admin
+          port: 8001
+      loop_control:
+        loop_var: service
+
+    # IMPORT : les handlers sont disponibles immédiatement
+    - name: Import avec handlers
+      ansible.builtin.import_tasks: tasks_with_handlers.yml
+      # Les handlers sont accessibles dans tout le play
+
+    # INCLUDE : les handlers ne sont disponibles qu'après l'include
+    - name: Include avec handlers
+      ansible.builtin.include_tasks: tasks_with_handlers.yml
+      # Les handlers ne sont accessibles qu'après cette tâche
+```
+
+### Pattern : inclusion conditionnelle avancée
+
+```yaml
+---
+- name: Pattern d'inclusion sophistiqué
+  hosts: all
+  vars:
+    features:
+      monitoring: true
+      backup: true
+      ssl: false
+  tasks:
+    - name: Inclure les tâches de fonctionnalités activées
+      ansible.builtin.include_tasks: "feature_{{ item.key }}.yml"
+      when: item.value | bool
+      loop: "{{ features | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Inclure les tâches spécifiques à l'OS
+      ansible.builtin.include_tasks: "{{ lookup('ansible.builtin.first_found', params) }}"
+      vars:
+        params:
+          files:
+            - "{{ ansible_distribution }}-{{ ansible_distribution_version }}.yml"
+            - "{{ ansible_distribution }}-{{ ansible_distribution_major_version }}.yml"
+            - "{{ ansible_distribution }}.yml"
+            - "{{ ansible_os_family }}.yml"
+            - "default.yml"
+          paths:
+            - "tasks/os"
+```
+
+## run_once
+
+Exécute une tâche une seule fois, quel que soit le nombre d'hôtes.
+
+```yaml
+---
+- name: Utilisation de run_once
+  hosts: webservers
+  tasks:
+    - name: Créer une sauvegarde de la base de données
+      community.postgresql.postgresql_db:
+        name: production
+        state: dump
+        target: /backup/prod-{{ ansible_date_time.date }}.sql
+      delegate_to: db-primary.example.com
+      run_once: true
+      # S'exécute une seule fois, même avec 100 webservers
+
+    - name: Envoyer une notification de début de déploiement
+      ansible.builtin.uri:
+        url: https://slack.com/api/chat.postMessage
+        method: POST
+        headers:
+          Authorization: "Bearer {{ slack_token }}"
+        body_format: json
+        body:
+          channel: "#deployments"
+          text: "Déploiement démarré sur {{ ansible_play_hosts | length }} serveurs"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Installer l'application sur chaque serveur
+      ansible.builtin.apt:
+        name: myapp
+        state: latest
+      # S'exécute sur tous les hôtes
+
+    - name: Notifier la fin du déploiement
+      ansible.builtin.uri:
+        url: https://slack.com/api/chat.postMessage
+        method: POST
+        headers:
+          Authorization: "Bearer {{ slack_token }}"
+        body_format: json
+        body:
+          channel: "#deployments"
+          text: "Déploiement terminé avec succès"
+      delegate_to: localhost
+      run_once: true
+      when: ansible_play_hosts == ansible_play_hosts_all
+```
+
+### Pattern : run_once avec facts partagés
+
+```yaml
+---
+- name: run_once avec partage de données
+  hosts: all
+  tasks:
+    - name: Récupérer la dernière version depuis l'API
+      ansible.builtin.uri:
+        url: https://api.example.com/releases/latest
+        return_content: true
+      delegate_to: localhost
+      run_once: true
+      register: latest_release
+
+    - name: Définir la version comme fact pour tous les hôtes
+      ansible.builtin.set_fact:
+        app_version: "{{ latest_release.json.version }}"
+      run_once: true
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Tous les hôtes utilisent la même version
+      ansible.builtin.debug:
+        msg: "Installation de la version {{ hostvars['localhost']['app_version'] }}"
+```
+
+## throttle
+
+Limite le nombre d'hôtes exécutant une tâche simultanément.
+
+```yaml
+---
+- name: Utilisation de throttle
+  hosts: all
+  tasks:
+    - name: Télécharger un gros fichier (limiter la bande passante)
+      ansible.builtin.get_url:
+        url: https://releases.example.com/large-file.iso
+        dest: /tmp/large-file.iso
+      throttle: 3  # Maximum 3 téléchargements simultanés
+
+    - name: Redémarrer le service (éviter une surcharge)
+      ansible.builtin.systemd:
+        name: application
+        state: restarted
+      throttle: 5
+
+    - name: Interroger une API avec rate limiting
+      ansible.builtin.uri:
+        url: https://api.example.com/data/{{ inventory_hostname }}
+        method: GET
+      throttle: 2  # Maximum 2 requêtes simultanées
+      register: api_response
+
+    - name: Opération intensive sur la base de données
+      community.postgresql.postgresql_query:
+        db: production
+        query: "UPDATE users SET migrated = true WHERE server = '{{ inventory_hostname }}'"
+      delegate_to: db-primary.example.com
+      throttle: 1  # Une seule opération à la fois
+```
+
+### Throttle avec serial
+
+```yaml
+---
+- name: Combinaison throttle et serial
+  hosts: production
+  serial: 10  # Traiter 10 hôtes à la fois
+  tasks:
+    - name: Déployer l'application
+      ansible.builtin.copy:
+        src: /builds/app/
+        dest: /opt/app/
+
+    - name: Redémarrer avec throttle
+      ansible.builtin.systemd:
+        name: app
+        state: restarted
+      throttle: 3  # Parmi les 10 du batch, seulement 3 redémarrent simultanément
+```
+
+## Lookups avancés
+
+### Lookups intégrés
+
+```yaml
+---
+- name: Lookups avancés
+  hosts: localhost
+  tasks:
+    - name: Lire un fichier
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.file', '/etc/hostname') }}"
+
+    - name: Lire une variable d'environnement
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.env', 'HOME') }}"
+
+    - name: Parser du YAML/JSON
+      ansible.builtin.set_fact:
+        config: "{{ lookup('ansible.builtin.file', 'config.json') | from_json }}"
+
+    - name: Utiliser pipe pour exécuter une commande
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.pipe', 'date +%Y-%m-%d') }}"
+
+    - name: Premier fichier trouvé
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.first_found', findme) }}"
+      vars:
+        findme:
+          - /etc/config.prod.yml
+          - /etc/config.{{ environment }}.yml
+          - /etc/config.default.yml
+
+    - name: Lookup avec items (boucle)
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      loop: "{{ query('ansible.builtin.fileglob', '/etc/*.conf') }}"
+
+    - name: Password lookup (génère si n'existe pas)
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.password', '/tmp/passwordfile chars=ascii_letters,digits length=16') }}"
+
+    - name: Template lookup
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.template', 'message.j2') }}"
+```
+
+### Lookups avec variables et filtres
+
+```yaml
+---
+- name: Lookups avancés avec traitement
+  hosts: all
+  vars:
+    config_dir: /etc/myapp
+  tasks:
+    - name: Combiner plusieurs fichiers
+      ansible.builtin.set_fact:
+        combined_config: >-
+          {{
+            lookup('ansible.builtin.file', config_dir + '/base.yml') | from_yaml
+            | combine(lookup('ansible.builtin.file', config_dir + '/override.yml') | from_yaml)
+          }}
+
+    - name: Utiliser dig pour DNS
+      ansible.builtin.debug:
+        msg: "IP de example.com: {{ lookup('community.general.dig', 'example.com') }}"
+
+    - name: Redis lookup
+      ansible.builtin.debug:
+        msg: "{{ lookup('community.general.redis', 'mykey', host='localhost') }}"
+      when: false  # Exemple uniquement
+
+    - name: Lookup avec erreur conditionnelle
+      ansible.builtin.set_fact:
+        api_key: "{{ lookup('ansible.builtin.env', 'API_KEY', default='') }}"
+
+    - name: Échouer si la clé est manquante
+      ansible.builtin.fail:
+        msg: "API_KEY est requise"
+      when: api_key == ''
+```
+
+### Pattern : configuration multi-sources
+
+```yaml
+---
+- name: Configuration depuis plusieurs sources
+  hosts: all
+  vars:
+    config_sources:
+      - type: file
+        path: /etc/app/base.yml
+      - type: env
+        var: APP_CONFIG_OVERRIDE
+      - type: url
+        url: https://config.example.com/{{ inventory_hostname }}.yml
+  tasks:
+    - name: Charger la configuration de base
+      ansible.builtin.set_fact:
+        base_config: "{{ lookup('ansible.builtin.file', '/etc/app/base.yml') | from_yaml }}"
+
+    - name: Surcharger avec la variable d'environnement
+      ansible.builtin.set_fact:
+        base_config: "{{ base_config | combine(lookup('ansible.builtin.env', 'APP_CONFIG_OVERRIDE', default='{}') | from_yaml) }}"
+      when: lookup('ansible.builtin.env', 'APP_CONFIG_OVERRIDE', default='') != ''
+
+    - name: Configuration finale
+      ansible.builtin.debug:
+        var: base_config
+```
+
+## Custom filters
+
+### Créer un filter personnalisé
+
+Créer `filter_plugins/custom_filters.py` :
+
+```python
+#!/usr/bin/python
+
+class FilterModule(object):
+    def filters(self):
+        return {
+            'reverse_string': self.reverse_string,
+            'extract_domain': self.extract_domain,
+            'format_bytes': self.format_bytes,
+        }
+
+    def reverse_string(self, string):
+        """Inverse une chaîne de caractères"""
+        return string[::-1]
+
+    def extract_domain(self, email):
+        """Extrait le domaine d'une adresse email"""
+        return email.split('@')[1] if '@' in email else ''
+
+    def format_bytes(self, bytes_value, precision=2):
+        """Formate des bytes en unités lisibles"""
+        units = ['B', 'KB', 'MB', 'GB', 'TB']
+        bytes_value = float(bytes_value)
+        unit_index = 0
+
+        while bytes_value >= 1024 and unit_index < len(units) - 1:
+            bytes_value /= 1024
+            unit_index += 1
+
+        return f"{bytes_value:.{precision}f} {units[unit_index]}"
+```
+
+### Utilisation dans un playbook
+
+```yaml
+---
+- name: Utilisation de filters personnalisés
+  hosts: localhost
+  vars:
+    test_string: "Ansible"
+    user_email: "admin@example.com"
+    disk_usage: 1536000000
+  tasks:
+    - name: Inverser une chaîne
+      ansible.builtin.debug:
+        msg: "{{ test_string | reverse_string }}"
+      # Résultat : "elbis nA"
+
+    - name: Extraire le domaine
+      ansible.builtin.debug:
+        msg: "Domaine: {{ user_email | extract_domain }}"
+      # Résultat : "example.com"
+
+    - name: Formater des bytes
+      ansible.builtin.debug:
+        msg: "Utilisation disque: {{ disk_usage | format_bytes }}"
+      # Résultat : "1.43 GB"
+
+    - name: Combiner avec d'autres filtres
+      ansible.builtin.debug:
+        msg: "{{ user_email | extract_domain | upper }}"
+      # Résultat : "EXAMPLE.COM"
+```
+
+### Filter avancé avec arguments
+
+```python
+#!/usr/bin/python
+
+import re
+from datetime import datetime, timedelta
+
+class FilterModule(object):
+    def filters(self):
+        return {
+            'mask_sensitive': self.mask_sensitive,
+            'parse_version': self.parse_version,
+            'add_days': self.add_days,
+        }
+
+    def mask_sensitive(self, value, visible_chars=4, mask_char='*'):
+        """Masque les données sensibles"""
+        if len(value) <= visible_chars:
+            return mask_char * len(value)
+        return value[:visible_chars] + mask_char * (len(value) - visible_chars)
+
+    def parse_version(self, version_string):
+        """Parse une chaîne de version en composants"""
+        match = re.match(r'(\d+)\.(\d+)\.(\d+)', version_string)
+        if match:
+            return {
+                'major': int(match.group(1)),
+                'minor': int(match.group(2)),
+                'patch': int(match.group(3))
+            }
+        return None
+
+    def add_days(self, date_string, days):
+        """Ajoute des jours à une date"""
+        date_obj = datetime.strptime(date_string, '%Y-%m-%d')
+        new_date = date_obj + timedelta(days=days)
+        return new_date.strftime('%Y-%m-%d')
+```
+
+```yaml
+---
+- name: Filters avancés
+  hosts: localhost
+  vars:
+    api_token: "sk-1234567890abcdef"
+    app_version: "2.5.3"
+    start_date: "2026-02-04"
+  tasks:
+    - name: Masquer le token
+      ansible.builtin.debug:
+        msg: "Token: {{ api_token | mask_sensitive(6) }}"
+      # Résultat : "sk-123************"
+
+    - name: Parser la version
+      ansible.builtin.set_fact:
+        version_info: "{{ app_version | parse_version }}"
+
+    - name: Afficher les composants de version
+      ansible.builtin.debug:
+        msg: "Version majeure: {{ version_info.major }}, mineure: {{ version_info.minor }}"
+
+    - name: Calculer une date future
+      ansible.builtin.debug:
+        msg: "Date d'expiration: {{ start_date | add_days(90) }}"
+      # Résultat : "2026-05-05"
+```
+
+## Environnement variables
+
+### Définir des variables d'environnement
+
+```yaml
+---
+- name: Gestion des variables d'environnement
+  hosts: all
+  tasks:
+    - name: Exécuter avec des variables d'environnement
+      ansible.builtin.command: /opt/app/bin/process
+      environment:
+        PATH: "/opt/app/bin:{{ ansible_env.PATH }}"
+        APP_ENV: production
+        DATABASE_URL: "postgresql://user:pass@db.example.com/prod"
+        LOG_LEVEL: debug
+
+    - name: Compiler une application
+      ansible.builtin.command: make build
+      args:
+        chdir: /opt/myapp
+      environment:
+        CC: gcc
+        CFLAGS: "-O2 -Wall"
+        MAKEFLAGS: "-j{{ ansible_processor_vcpus }}"
+
+    - name: Installer un package Python avec proxy
+      ansible.builtin.pip:
+        name: requests
+        state: latest
+      environment:
+        HTTP_PROXY: "http://proxy.example.com:3128"
+        HTTPS_PROXY: "http://proxy.example.com:3128"
+        NO_PROXY: "localhost,127.0.0.1"
+```
+
+### Environnement au niveau du play
+
+```yaml
+---
+- name: Environnement pour tout le play
+  hosts: all
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+    LANG: fr_FR.UTF-8
+    TZ: Europe/Paris
+  tasks:
+    - name: Cette tâche hérite de l'environnement du play
+      ansible.builtin.command: date
+      changed_when: false
+
+    - name: Cette tâche surcharge une variable
+      ansible.builtin.command: echo $TZ
+      environment:
+        TZ: America/New_York
+      changed_when: false
+
+    - name: Retour à l'environnement du play
+      ansible.builtin.command: date
+      changed_when: false
+```
+
+### Pattern : environnement conditionnel
+
+```yaml
+---
+- name: Environnement selon l'environnement de déploiement
+  hosts: all
+  vars:
+    env_vars:
+      development:
+        DEBUG: "true"
+        LOG_LEVEL: "debug"
+        API_URL: "http://api.dev.example.com"
+      staging:
+        DEBUG: "false"
+        LOG_LEVEL: "info"
+        API_URL: "https://api.staging.example.com"
+      production:
+        DEBUG: "false"
+        LOG_LEVEL: "warning"
+        API_URL: "https://api.example.com"
+  tasks:
+    - name: Démarrer l'application avec l'environnement approprié
+      ansible.builtin.systemd:
+        name: myapp
+        state: restarted
+      environment: "{{ env_vars[deployment_env] }}"
+
+    - name: Exécuter les tests
+      ansible.builtin.command: npm test
+      args:
+        chdir: /opt/app
+      environment:
+        NODE_ENV: test
+        CI: "true"
+      when: deployment_env != 'production'
+```
+
+### Environnement depuis un fichier
+
+```yaml
+---
+- name: Charger l'environnement depuis un fichier
+  hosts: all
+  tasks:
+    - name: Lire le fichier .env
+      ansible.builtin.slurp:
+        src: /opt/app/.env
+      register: env_file
+
+    - name: Parser les variables d'environnement
+      ansible.builtin.set_fact:
+        app_env: "{{ (env_file.content | b64decode).split('\n') | select('match', '^[A-Z]') | map('regex_replace', '(.+)=(.+)', '\\1: \"\\2\"') | join('\n') | from_yaml }}"
+
+    - name: Utiliser les variables
+      ansible.builtin.debug:
+        var: app_env
+
+    - name: Exécuter avec l'environnement chargé
+      ansible.builtin.command: /opt/app/bin/start
+      environment: "{{ app_env }}"
+```
+
+### Pattern : environnement avec secrets
+
+```yaml
+---
+- name: Environnement avec secrets
+  hosts: all
+  vars:
+    base_environment:
+      APP_ENV: production
+      LOG_PATH: /var/log/app
+  tasks:
+    - name: Récupérer les secrets depuis Vault
+      ansible.builtin.set_fact:
+        secret_environment:
+          DATABASE_PASSWORD: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/data/db:password') }}"
+          API_KEY: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/data/api:key') }}"
+      no_log: true
+
+    - name: Combiner environnement et secrets
+      ansible.builtin.set_fact:
+        full_environment: "{{ base_environment | combine(secret_environment) }}"
+      no_log: true
+
+    - name: Démarrer l'application
+      ansible.builtin.command: /opt/app/bin/start
+      environment: "{{ full_environment }}"
+      no_log: true
+```
+
+## Pattern complet : déploiement zero-downtime
+
+```yaml
+---
+- name: Déploiement zero-downtime avec patterns avancés
+  hosts: webservers
+  serial: "25%"
+  max_fail_percentage: 10
+  environment:
+    DEPLOYMENT_ID: "{{ lookup('ansible.builtin.pipe', 'date +%Y%m%d-%H%M%S') }}"
+  tasks:
+    - name: Vérifier la santé avant déploiement
+      ansible.builtin.uri:
+        url: "http://{{ inventory_hostname }}/health"
+        status_code: 200
+      delegate_to: localhost
+      retries: 3
+      delay: 5
+
+    - name: Retirer du load balancer
+      ansible.builtin.uri:
+        url: "https://lb.example.com/api/pool/{{ inventory_hostname }}/disable"
+        method: POST
+      delegate_to: localhost
+      run_once: true
+
+    - name: Créer un snapshot de la base de données
+      community.postgresql.postgresql_db:
+        name: production
+        state: dump
+        target: "/backup/pre-deploy-{{ lookup('ansible.builtin.pipe', 'date +%Y%m%d-%H%M%S') }}.sql"
+      delegate_to: db-primary.example.com
+      run_once: true
+      async: 600
+      poll: 0
+      register: backup_job
+
+    - name: Déployer la nouvelle version
+      ansible.builtin.include_tasks: "deploy_{{ deployment_strategy }}.yml"
+      environment:
+        APP_VERSION: "{{ version }}"
+        ROLLBACK_VERSION: "{{ current_version }}"
+
+    - name: Vérifier le statut du backup
+      ansible.builtin.async_status:
+        jid: "{{ backup_job.ansible_job_id }}"
+      delegate_to: db-primary.example.com
+      run_once: true
+      register: backup_result
+      until: backup_result.finished
+      retries: 60
+      delay: 10
+
+    - name: Redémarrer le service avec throttle
+      ansible.builtin.systemd:
+        name: myapp
+        state: restarted
+      throttle: 2
+
+    - name: Attendre la disponibilité
+      ansible.builtin.uri:
+        url: "http://{{ inventory_hostname }}/health"
+        status_code: 200
+      retries: 30
+      delay: 10
+
+    - name: Exécuter les smoke tests
+      ansible.builtin.command: /opt/app/bin/smoke-test.sh
+      environment:
+        TEST_URL: "http://{{ inventory_hostname }}"
+      changed_when: false
+
+    - name: Remettre dans le load balancer
+      ansible.builtin.uri:
+        url: "https://lb.example.com/api/pool/{{ inventory_hostname }}/enable"
+        method: POST
+      delegate_to: localhost
+
+    - name: Notifier le succès
+      ansible.builtin.uri:
+        url: "{{ slack_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: "Déploiement réussi sur {{ inventory_hostname }}"
+      delegate_to: localhost
+      run_once: true
+      when: ansible_play_batch == ansible_play_hosts[-1:]
+```
+
+---
+
+Ces patterns avancés permettent de gérer des scénarios complexes : déploiements progressifs, haute disponibilité, parallélisme contrôlé, et orchestration sophistiquée d'infrastructures à grande échelle.

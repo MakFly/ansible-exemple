@@ -1,0 +1,2694 @@
+# Modules & Plugins
+
+Ansible dispose d'une vaste bibliothèque de modules et plugins pour automatiser tous types d'infrastructures.
+
+## Modules Built-in par Catégorie
+
+### Modules Système
+
+Les modules système permettent de gérer les utilisateurs, groupes, tâches planifiées et paramètres kernel.
+
+#### ansible.builtin.user
+
+Gère les comptes utilisateurs Unix/Linux.
+
+```yaml
+- name: Créer un utilisateur avec home et shell
+  ansible.builtin.user:
+    name: johndoe
+    uid: 1050
+    group: developers
+    groups: docker,sudo
+    shell: /bin/bash
+    home: /home/johndoe
+    create_home: true
+    comment: "John Doe - Developer"
+    state: present
+
+- name: Créer un utilisateur système sans home
+  ansible.builtin.user:
+    name: appuser
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Définir une clé SSH pour un utilisateur
+  ansible.builtin.user:
+    name: johndoe
+    state: present
+    generate_ssh_key: true
+    ssh_key_bits: 4096
+    ssh_key_file: .ssh/id_rsa
+
+- name: Verrouiller un compte utilisateur
+  ansible.builtin.user:
+    name: johndoe
+    password_lock: true
+
+- name: Supprimer un utilisateur et son home
+  ansible.builtin.user:
+    name: johndoe
+    state: absent
+    remove: true
+```
+
+#### ansible.builtin.group
+
+Gère les groupes Unix/Linux.
+
+```yaml
+- name: Créer un groupe
+  ansible.builtin.group:
+    name: developers
+    gid: 2000
+    state: present
+
+- name: Créer un groupe système
+  ansible.builtin.group:
+    name: appgroup
+    system: true
+    state: present
+
+- name: Supprimer un groupe
+  ansible.builtin.group:
+    name: oldgroup
+    state: absent
+```
+
+#### ansible.builtin.cron
+
+Gère les tâches cron.
+
+```yaml
+- name: Créer une tâche cron quotidienne
+  ansible.builtin.cron:
+    name: "Backup database"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/backup.sh"
+    user: root
+    state: present
+
+- name: Créer une tâche cron avec intervalle personnalisé
+  ansible.builtin.cron:
+    name: "Check logs"
+    minute: "*/15"
+    hour: "*"
+    job: "/usr/local/bin/check_logs.sh"
+
+- name: Créer une tâche cron avec des variables d'environnement
+  ansible.builtin.cron:
+    name: "Python script"
+    minute: "30"
+    hour: "4"
+    job: "/opt/app/script.py"
+    env: true
+    cron_file: python_jobs
+    user: appuser
+
+- name: Créer une tâche cron avec @reboot
+  ansible.builtin.cron:
+    name: "Start service on boot"
+    special_time: reboot
+    job: "/usr/local/bin/start_service.sh"
+
+- name: Supprimer une tâche cron
+  ansible.builtin.cron:
+    name: "Old backup"
+    state: absent
+```
+
+#### ansible.builtin.sysctl
+
+Gère les paramètres kernel Linux.
+
+```yaml
+- name: Configurer le forwarding IPv4
+  ansible.builtin.sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Configurer plusieurs paramètres réseau
+  ansible.builtin.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+    - { name: 'net.ipv4.tcp_max_syn_backlog', value: '2048' }
+    - { name: 'net.core.somaxconn', value: '1024' }
+
+- name: Configurer les limites de mémoire partagée
+  ansible.builtin.sysctl:
+    name: kernel.shmmax
+    value: 68719476736
+    state: present
+    sysctl_file: /etc/sysctl.d/50-custom.conf
+
+- name: Désactiver IPv6
+  ansible.builtin.sysctl:
+    name: net.ipv6.conf.all.disable_ipv6
+    value: '1'
+    state: present
+    reload: true
+```
+
+### Modules Fichiers
+
+Les modules fichiers permettent de gérer les fichiers, templates, permissions et synchronisation.
+
+#### ansible.builtin.copy
+
+Copie des fichiers vers les hôtes distants.
+
+```yaml
+- name: Copier un fichier simple
+  ansible.builtin.copy:
+    src: /local/path/config.conf
+    dest: /etc/app/config.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Copier avec backup
+  ansible.builtin.copy:
+    src: /local/path/important.conf
+    dest: /etc/important.conf
+    backup: true
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Créer un fichier avec du contenu inline
+  ansible.builtin.copy:
+    content: |
+      # Configuration généré par Ansible
+      SERVER_PORT=8080
+      DEBUG=false
+    dest: /etc/app/settings.env
+    mode: '0644'
+
+- name: Copier un répertoire entier
+  ansible.builtin.copy:
+    src: /local/config/
+    dest: /etc/app/
+    owner: appuser
+    group: appgroup
+    mode: '0755'
+    directory_mode: '0755'
+
+- name: Copier avec validation
+  ansible.builtin.copy:
+    src: /local/nginx.conf
+    dest: /etc/nginx/nginx.conf
+    validate: /usr/sbin/nginx -t -c %s
+    backup: true
+```
+
+#### ansible.builtin.template
+
+Génère des fichiers à partir de templates Jinja2.
+
+```yaml
+- name: Déployer une configuration depuis template
+  ansible.builtin.template:
+    src: templates/app.conf.j2
+    dest: /etc/app/app.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template avec backup et validation
+  ansible.builtin.template:
+    src: templates/nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    validate: /usr/sbin/nginx -t -c %s
+    backup: true
+
+- name: Template avec variables personnalisées
+  ansible.builtin.template:
+    src: templates/database.yml.j2
+    dest: /opt/app/config/database.yml
+    owner: appuser
+    group: appgroup
+    mode: '0600'
+  vars:
+    db_host: "{{ database_host }}"
+    db_port: "{{ database_port }}"
+    db_name: "{{ app_database }}"
+```
+
+Exemple de template `app.conf.j2` :
+
+```jinja2
+# Configuration for {{ app_name }}
+# Generated by Ansible on {{ ansible_date_time.iso8601 }}
+
+server {
+    listen {{ app_port }};
+    server_name {{ ansible_fqdn }};
+
+    {% if app_ssl_enabled %}
+    ssl_certificate {{ ssl_cert_path }};
+    ssl_certificate_key {{ ssl_key_path }};
+    {% endif %}
+
+    location / {
+        proxy_pass http://{{ backend_host }}:{{ backend_port }};
+        {% for header in proxy_headers %}
+        proxy_set_header {{ header.name }} {{ header.value }};
+        {% endfor %}
+    }
+}
+```
+
+#### ansible.builtin.file
+
+Gère les fichiers, répertoires, liens symboliques et permissions.
+
+```yaml
+- name: Créer un répertoire
+  ansible.builtin.file:
+    path: /opt/application/data
+    state: directory
+    owner: appuser
+    group: appgroup
+    mode: '0755'
+
+- name: Créer un répertoire avec parents
+  ansible.builtin.file:
+    path: /var/log/app/archive/2024
+    state: directory
+    mode: '0755'
+    recurse: true
+
+- name: Créer un lien symbolique
+  ansible.builtin.file:
+    src: /opt/app/releases/v1.2.3
+    dest: /opt/app/current
+    state: link
+    owner: appuser
+    group: appgroup
+
+- name: Changer les permissions récursivement
+  ansible.builtin.file:
+    path: /var/www/html
+    owner: www-data
+    group: www-data
+    mode: '0755'
+    recurse: true
+
+- name: Créer un fichier vide
+  ansible.builtin.file:
+    path: /var/log/app/app.log
+    state: touch
+    owner: appuser
+    group: appgroup
+    mode: '0644'
+
+- name: Supprimer un fichier
+  ansible.builtin.file:
+    path: /tmp/oldfile.txt
+    state: absent
+
+- name: Supprimer un répertoire récursivement
+  ansible.builtin.file:
+    path: /opt/old_app
+    state: absent
+```
+
+#### ansible.builtin.lineinfile
+
+Gère des lignes individuelles dans des fichiers.
+
+```yaml
+- name: Ajouter ou modifier une ligne
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "192.168.1.100 webserver.local"
+    state: present
+
+- name: Modifier une ligne avec regex
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+    backup: true
+
+- name: Ajouter une ligne après un pattern
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    insertafter: '^/dev/sda1'
+    line: '/dev/sdb1 /data ext4 defaults 0 2'
+
+- name: Ajouter une ligne au début du fichier
+  ansible.builtin.lineinfile:
+    path: /etc/profile
+    line: 'export APP_ENV=production'
+    insertbefore: BOF
+
+- name: Supprimer une ligne
+  ansible.builtin.lineinfile:
+    path: /etc/config.conf
+    regexp: '^DEBUG='
+    state: absent
+
+- name: Créer le fichier s'il n'existe pas
+  ansible.builtin.lineinfile:
+    path: /etc/app/settings.conf
+    line: 'APP_MODE=production'
+    create: true
+    owner: root
+    group: root
+    mode: '0644'
+```
+
+#### ansible.builtin.blockinfile
+
+Gère des blocs de lignes dans des fichiers.
+
+```yaml
+- name: Ajouter un bloc de configuration
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    block: |
+      # Security hardening
+      PermitRootLogin no
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      ChallengeResponseAuthentication no
+    backup: true
+
+- name: Ajouter un bloc avec marqueurs personnalisés
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED - Application hosts"
+    block: |
+      192.168.1.10 db.local
+      192.168.1.11 cache.local
+      192.168.1.12 queue.local
+
+- name: Insérer un bloc après un pattern
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/nginx.conf
+    insertafter: 'http {'
+    block: |
+      client_max_body_size 100M;
+      keepalive_timeout 65;
+      gzip on;
+
+- name: Supprimer un bloc
+  ansible.builtin.blockinfile:
+    path: /etc/config.conf
+    marker: "# {mark} OLD CONFIG"
+    state: absent
+
+- name: Bloc avec validation
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/sites-available/default
+    block: |
+      location /api {
+          proxy_pass http://backend:8080;
+      }
+    validate: /usr/sbin/nginx -t -c %s
+    backup: true
+```
+
+#### ansible.posix.synchronize
+
+Synchronise des fichiers avec rsync.
+
+```yaml
+- name: Synchroniser un répertoire local vers distant
+  ansible.posix.synchronize:
+    src: /local/path/website/
+    dest: /var/www/html/
+    delete: true
+    recursive: true
+
+- name: Synchroniser avec exclusions
+  ansible.posix.synchronize:
+    src: /local/app/
+    dest: /opt/app/
+    rsync_opts:
+      - "--exclude=*.log"
+      - "--exclude=node_modules/"
+      - "--exclude=.git/"
+
+- name: Synchroniser avec compression
+  ansible.posix.synchronize:
+    src: /local/data/
+    dest: /backup/data/
+    compress: true
+    archive: true
+
+- name: Synchroniser depuis distant vers local
+  ansible.posix.synchronize:
+    mode: pull
+    src: /var/log/app/
+    dest: /local/logs/{{ inventory_hostname }}/
+
+- name: Synchroniser avec permissions spécifiques
+  ansible.posix.synchronize:
+    src: /local/config/
+    dest: /etc/app/
+    owner: false
+    group: false
+    rsync_opts:
+      - "--chmod=D755,F644"
+```
+
+### Modules Packages
+
+Les modules packages gèrent l'installation de logiciels sur différents systèmes.
+
+#### ansible.builtin.apt
+
+Gère les paquets sur Debian/Ubuntu.
+
+```yaml
+- name: Installer un paquet
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+
+- name: Installer plusieurs paquets
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - postgresql
+      - redis-server
+    state: present
+    update_cache: true
+
+- name: Installer une version spécifique
+  ansible.builtin.apt:
+    name: nginx=1.18.0-0ubuntu1
+    state: present
+
+- name: Mettre à jour tous les paquets
+  ansible.builtin.apt:
+    upgrade: dist
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Installer depuis un fichier .deb
+  ansible.builtin.apt:
+    deb: /tmp/custom-package.deb
+
+- name: Supprimer un paquet
+  ansible.builtin.apt:
+    name: apache2
+    state: absent
+    purge: true
+
+- name: Installer avec recommandations désactivées
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    install_recommends: false
+
+- name: Ajouter un repository et installer
+  block:
+    - name: Ajouter la clé GPG
+      ansible.builtin.apt_key:
+        url: https://packages.example.com/gpg.key
+        state: present
+
+    - name: Ajouter le repository
+      ansible.builtin.apt_repository:
+        repo: deb https://packages.example.com/ubuntu focal main
+        state: present
+
+    - name: Installer depuis le nouveau repo
+      ansible.builtin.apt:
+        name: custom-package
+        state: present
+        update_cache: true
+```
+
+#### ansible.builtin.yum
+
+Gère les paquets sur RedHat/CentOS.
+
+```yaml
+- name: Installer un paquet
+  ansible.builtin.yum:
+    name: nginx
+    state: present
+
+- name: Installer plusieurs paquets
+  ansible.builtin.yum:
+    name:
+      - httpd
+      - mariadb-server
+      - php
+    state: present
+
+- name: Installer une version spécifique
+  ansible.builtin.yum:
+    name: nginx-1.20.1
+    state: present
+
+- name: Mettre à jour tous les paquets
+  ansible.builtin.yum:
+    name: '*'
+    state: latest
+
+- name: Installer un groupe de paquets
+  ansible.builtin.yum:
+    name: "@Development Tools"
+    state: present
+
+- name: Installer depuis une URL
+  ansible.builtin.yum:
+    name: https://example.com/package.rpm
+    state: present
+
+- name: Supprimer un paquet
+  ansible.builtin.yum:
+    name: httpd
+    state: absent
+
+- name: Installer avec désactivation de repo
+  ansible.builtin.yum:
+    name: nginx
+    state: present
+    disablerepo: epel
+```
+
+#### ansible.builtin.pip
+
+Gère les paquets Python pip.
+
+```yaml
+- name: Installer un paquet pip
+  ansible.builtin.pip:
+    name: django
+    state: present
+
+- name: Installer plusieurs paquets
+  ansible.builtin.pip:
+    name:
+      - flask
+      - requests
+      - celery
+    state: present
+
+- name: Installer une version spécifique
+  ansible.builtin.pip:
+    name: django==4.2.0
+    state: present
+
+- name: Installer depuis requirements.txt
+  ansible.builtin.pip:
+    requirements: /opt/app/requirements.txt
+    virtualenv: /opt/app/venv
+    virtualenv_command: python3 -m venv
+
+- name: Installer dans un virtualenv existant
+  ansible.builtin.pip:
+    name: fastapi
+    virtualenv: /opt/app/venv
+    state: present
+
+- name: Installer avec pip spécifique
+  ansible.builtin.pip:
+    name: numpy
+    executable: /usr/bin/pip3
+
+- name: Installer en mode editable depuis git
+  ansible.builtin.pip:
+    name: git+https://github.com/user/repo.git@main#egg=mypackage
+    editable: true
+    virtualenv: /opt/app/venv
+
+- name: Désinstaller un paquet
+  ansible.builtin.pip:
+    name: old-package
+    state: absent
+```
+
+### Modules Services
+
+Les modules services gèrent les services système.
+
+#### ansible.builtin.service
+
+Gère les services (init.d, systemd, upstart).
+
+```yaml
+- name: Démarrer un service
+  ansible.builtin.service:
+    name: nginx
+    state: started
+
+- name: Arrêter un service
+  ansible.builtin.service:
+    name: apache2
+    state: stopped
+
+- name: Redémarrer un service
+  ansible.builtin.service:
+    name: postgresql
+    state: restarted
+
+- name: Recharger la configuration
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+
+- name: Activer un service au démarrage
+  ansible.builtin.service:
+    name: docker
+    enabled: true
+
+- name: Démarrer et activer un service
+  ansible.builtin.service:
+    name: redis
+    state: started
+    enabled: true
+
+- name: Désactiver un service
+  ansible.builtin.service:
+    name: cups
+    enabled: false
+    state: stopped
+```
+
+#### ansible.builtin.systemd
+
+Gère les services systemd avec plus d'options.
+
+```yaml
+- name: Démarrer un service systemd
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Recharger les fichiers systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Déployer et activer une unit systemd
+  block:
+    - name: Copier le fichier unit
+      ansible.builtin.copy:
+        src: myapp.service
+        dest: /etc/systemd/system/myapp.service
+        mode: '0644'
+
+    - name: Recharger systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Activer et démarrer le service
+      ansible.builtin.systemd:
+        name: myapp
+        state: started
+        enabled: true
+
+- name: Masquer un service
+  ansible.builtin.systemd:
+    name: bluetooth
+    masked: true
+
+- name: Redémarrer avec condition
+  ansible.builtin.systemd:
+    name: app
+    state: restarted
+  when: config_changed.changed
+
+- name: Vérifier le statut sans changer l'état
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+  check_mode: true
+  register: nginx_status
+```
+
+### Modules Réseau
+
+Les modules réseau permettent de tester et télécharger des ressources.
+
+#### ansible.builtin.uri
+
+Interagit avec des API HTTP/HTTPS.
+
+```yaml
+- name: GET simple
+  ansible.builtin.uri:
+    url: https://api.example.com/health
+    method: GET
+    return_content: true
+  register: health_check
+
+- name: POST avec authentification
+  ansible.builtin.uri:
+    url: https://api.example.com/users
+    method: POST
+    user: admin
+    password: secret
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "John Doe"
+      email: "john@example.com"
+    status_code: 201
+
+- name: PUT avec token bearer
+  ansible.builtin.uri:
+    url: https://api.example.com/config
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ api_token }}"
+      Content-Type: "application/json"
+    body: "{{ config_data | to_json }}"
+    status_code: 200
+
+- name: DELETE une ressource
+  ansible.builtin.uri:
+    url: https://api.example.com/users/123
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ api_token }}"
+    status_code: [200, 204]
+
+- name: Vérifier une URL avec validation SSL
+  ansible.builtin.uri:
+    url: https://secure.example.com
+    validate_certs: true
+    status_code: 200
+
+- name: Télécharger et vérifier le contenu
+  ansible.builtin.uri:
+    url: https://api.example.com/version
+    return_content: true
+  register: version_info
+  failed_when: "'v2' not in version_info.content"
+
+- name: POST multipart/form-data
+  ansible.builtin.uri:
+    url: https://api.example.com/upload
+    method: POST
+    body_format: form-multipart
+    body:
+      file: "{{ lookup('file', '/local/file.txt') }}"
+      description: "Uploaded file"
+```
+
+#### ansible.builtin.get_url
+
+Télécharge des fichiers depuis HTTP/HTTPS/FTP.
+
+```yaml
+- name: Télécharger un fichier
+  ansible.builtin.get_url:
+    url: https://example.com/file.tar.gz
+    dest: /tmp/file.tar.gz
+    mode: '0644'
+
+- name: Télécharger avec authentification
+  ansible.builtin.get_url:
+    url: https://secure.example.com/package.deb
+    dest: /tmp/package.deb
+    username: admin
+    password: secret
+    force_basic_auth: true
+
+- name: Télécharger avec vérification checksum
+  ansible.builtin.get_url:
+    url: https://example.com/binary
+    dest: /usr/local/bin/tool
+    checksum: sha256:abc123def456...
+    mode: '0755'
+
+- name: Télécharger seulement si modifié
+  ansible.builtin.get_url:
+    url: https://example.com/config.json
+    dest: /etc/app/config.json
+    force: false
+
+- name: Télécharger avec headers personnalisés
+  ansible.builtin.get_url:
+    url: https://api.example.com/download
+    dest: /tmp/data.zip
+    headers:
+      Authorization: "Bearer {{ token }}"
+      X-API-Version: "v2"
+
+- name: Télécharger via proxy
+  ansible.builtin.get_url:
+    url: https://example.com/file.tar.gz
+    dest: /tmp/file.tar.gz
+    use_proxy: true
+  environment:
+    http_proxy: http://proxy.example.com:8080
+    https_proxy: http://proxy.example.com:8080
+```
+
+#### ansible.builtin.wait_for
+
+Attend qu'une condition soit remplie.
+
+```yaml
+- name: Attendre qu'un port soit ouvert
+  ansible.builtin.wait_for:
+    port: 80
+    delay: 10
+    timeout: 300
+
+- name: Attendre qu'un service soit prêt
+  ansible.builtin.wait_for:
+    host: database.example.com
+    port: 5432
+    state: started
+    delay: 5
+    timeout: 60
+
+- name: Attendre qu'un port soit fermé
+  ansible.builtin.wait_for:
+    port: 8080
+    state: stopped
+    timeout: 30
+
+- name: Attendre qu'un fichier existe
+  ansible.builtin.wait_for:
+    path: /var/run/app.pid
+    state: present
+    timeout: 60
+
+- name: Attendre qu'un fichier contienne un texte
+  ansible.builtin.wait_for:
+    path: /var/log/app/startup.log
+    search_regex: "Application started successfully"
+    timeout: 120
+
+- name: Attendre qu'un fichier soit supprimé
+  ansible.builtin.wait_for:
+    path: /tmp/lock.file
+    state: absent
+    timeout: 300
+
+- name: Attendre avant de continuer
+  ansible.builtin.wait_for:
+    timeout: 30
+  delegate_to: localhost
+```
+
+### Modules Commandes
+
+Les modules commandes exécutent des commandes sur les hôtes distants.
+
+#### ansible.builtin.command
+
+Exécute des commandes sans shell.
+
+```yaml
+- name: Exécuter une commande simple
+  ansible.builtin.command: ls -la /tmp
+
+- name: Exécuter avec changement de répertoire
+  ansible.builtin.command:
+    cmd: ls -la
+    chdir: /opt/app
+
+- name: Créer un fichier seulement s'il n'existe pas
+  ansible.builtin.command:
+    cmd: touch /tmp/marker
+    creates: /tmp/marker
+
+- name: Exécuter seulement si un fichier existe
+  ansible.builtin.command:
+    cmd: /usr/local/bin/cleanup.sh
+    removes: /tmp/cleanup.flag
+
+- name: Exécuter et capturer la sortie
+  ansible.builtin.command: cat /etc/os-release
+  register: os_info
+  changed_when: false
+
+- name: Utiliser la sortie d'une commande
+  ansible.builtin.command: hostname
+  register: server_hostname
+  changed_when: false
+
+- debug:
+    msg: "Server hostname is {{ server_hostname.stdout }}"
+```
+
+#### ansible.builtin.shell
+
+Exécute des commandes avec shell (pipes, redirections).
+
+```yaml
+- name: Exécuter avec pipe
+  ansible.builtin.shell: ps aux | grep nginx | grep -v grep
+
+- name: Exécuter avec redirection
+  ansible.builtin.shell: echo "Hello" > /tmp/greeting.txt
+
+- name: Exécuter un script bash en ligne
+  ansible.builtin.shell: |
+    if [ -f /tmp/marker ]; then
+      echo "Marker exists"
+      exit 0
+    else
+      echo "Marker not found"
+      exit 1
+    fi
+  register: check_result
+  failed_when: check_result.rc != 0
+
+- name: Utiliser des variables d'environnement
+  ansible.builtin.shell: echo $APP_ENV
+  environment:
+    APP_ENV: production
+
+- name: Exécuter avec un shell spécifique
+  ansible.builtin.shell:
+    cmd: echo $0
+    executable: /bin/bash
+
+- name: Exécuter et ignorer les erreurs
+  ansible.builtin.shell: some_command_that_might_fail
+  ignore_errors: true
+
+- name: Exécuter avec timeout
+  ansible.builtin.shell:
+    cmd: long_running_command
+    timeout: 300
+```
+
+#### ansible.builtin.raw
+
+Exécute des commandes sans Python (utile pour bootstrapping).
+
+```yaml
+- name: Bootstrap Python sur un système minimal
+  ansible.builtin.raw: apt-get update && apt-get install -y python3
+  when: ansible_python_interpreter is not defined
+
+- name: Vérifier la connectivité sans Python
+  ansible.builtin.raw: echo "Hello from raw module"
+
+- name: Installer Python sur Alpine Linux
+  ansible.builtin.raw: apk add --no-cache python3
+
+- name: Commande raw avec redirection
+  ansible.builtin.raw: cat /etc/os-release > /tmp/os-info.txt
+```
+
+#### ansible.builtin.script
+
+Exécute un script local sur les hôtes distants.
+
+```yaml
+- name: Exécuter un script local
+  ansible.builtin.script: /local/path/setup.sh
+
+- name: Exécuter avec arguments
+  ansible.builtin.script: /local/path/configure.sh --env production --verbose
+
+- name: Exécuter seulement si un fichier n'existe pas
+  ansible.builtin.script:
+    cmd: /local/path/init.sh
+    creates: /etc/app/initialized
+
+- name: Exécuter avec un interpréteur spécifique
+  ansible.builtin.script:
+    cmd: /local/path/script.py
+    executable: python3
+
+- name: Exécuter et capturer la sortie
+  ansible.builtin.script: /local/path/check.sh
+  register: check_output
+
+- debug:
+    var: check_output.stdout_lines
+```
+
+#### ansible.builtin.expect
+
+Interagit avec des commandes qui requièrent une entrée interactive.
+
+```yaml
+- name: Changer un mot de passe avec passwd
+  ansible.builtin.expect:
+    command: passwd user
+    responses:
+      'New password:': 'NewSecurePassword123!'
+      'Retype new password:': 'NewSecurePassword123!'
+
+- name: Exécuter une commande interactive
+  ansible.builtin.expect:
+    command: /usr/local/bin/interactive_setup
+    responses:
+      'Enter username:': 'admin'
+      'Enter password:': 'secret'
+      'Confirm \(y/n\):': 'y'
+    timeout: 60
+
+- name: SSH avec acceptation de clé
+  ansible.builtin.expect:
+    command: ssh user@newhost.example.com
+    responses:
+      'Are you sure you want to continue connecting': 'yes'
+      'password:': 'temporarypass'
+```
+
+## Modules Cloud
+
+### Modules AWS
+
+#### amazon.aws.ec2_instance
+
+Gère les instances EC2.
+
+```yaml
+- name: Lancer une instance EC2
+  amazon.aws.ec2_instance:
+    name: "web-server-01"
+    key_name: "my-key-pair"
+    instance_type: t3.micro
+    image_id: ami-0c55b159cbfafe1f0
+    region: us-east-1
+    vpc_subnet_id: subnet-abc123
+    security_groups:
+      - sg-123456
+    network:
+      assign_public_ip: true
+    tags:
+      Environment: production
+      Application: web
+    state: running
+
+- name: Lancer avec user data
+  amazon.aws.ec2_instance:
+    name: "app-server"
+    instance_type: t3.small
+    image_id: ami-0c55b159cbfafe1f0
+    region: us-east-1
+    vpc_subnet_id: subnet-abc123
+    user_data: |
+      #!/bin/bash
+      apt-get update
+      apt-get install -y nginx
+      systemctl start nginx
+    state: running
+
+- name: Arrêter une instance
+  amazon.aws.ec2_instance:
+    instance_ids:
+      - i-1234567890abcdef0
+    state: stopped
+    region: us-east-1
+
+- name: Terminer une instance
+  amazon.aws.ec2_instance:
+    instance_ids:
+      - i-1234567890abcdef0
+    state: terminated
+    region: us-east-1
+
+- name: Lancer avec volumes EBS
+  amazon.aws.ec2_instance:
+    name: "data-server"
+    instance_type: t3.medium
+    image_id: ami-0c55b159cbfafe1f0
+    region: us-east-1
+    volumes:
+      - device_name: /dev/sda1
+        ebs:
+          volume_size: 30
+          volume_type: gp3
+          delete_on_termination: true
+      - device_name: /dev/sdb
+        ebs:
+          volume_size: 100
+          volume_type: gp3
+          delete_on_termination: false
+    state: running
+```
+
+#### amazon.aws.s3_bucket
+
+Gère les buckets S3.
+
+```yaml
+- name: Créer un bucket S3
+  amazon.aws.s3_bucket:
+    name: my-unique-bucket-name
+    region: us-east-1
+    state: present
+
+- name: Créer un bucket avec versioning
+  amazon.aws.s3_bucket:
+    name: my-versioned-bucket
+    region: us-east-1
+    versioning: true
+    state: present
+
+- name: Configurer le chiffrement
+  amazon.aws.s3_bucket:
+    name: my-encrypted-bucket
+    region: us-east-1
+    encryption: "AES256"
+    state: present
+
+- name: Configurer la politique de bucket
+  amazon.aws.s3_bucket:
+    name: my-bucket
+    region: us-east-1
+    policy: "{{ lookup('file', 'bucket-policy.json') }}"
+    state: present
+
+- name: Supprimer un bucket
+  amazon.aws.s3_bucket:
+    name: my-old-bucket
+    region: us-east-1
+    state: absent
+    force: true
+```
+
+#### amazon.aws.iam_role
+
+Gère les rôles IAM.
+
+```yaml
+- name: Créer un rôle IAM pour EC2
+  amazon.aws.iam_role:
+    name: EC2-S3-ReadOnly
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      }
+    managed_policies:
+      - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+    state: present
+
+- name: Créer un rôle Lambda avec politique inline
+  amazon.aws.iam_role:
+    name: LambdaExecutionRole
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "lambda.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      }
+    policies:
+      - policy_name: LambdaLogging
+        policy_document:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: "arn:aws:logs:*:*:*"
+    state: present
+
+- name: Supprimer un rôle IAM
+  amazon.aws.iam_role:
+    name: OldRole
+    state: absent
+```
+
+#### amazon.aws.ec2_vpc_net
+
+Gère les VPC.
+
+```yaml
+- name: Créer un VPC
+  amazon.aws.ec2_vpc_net:
+    name: "Production VPC"
+    cidr_block: 10.0.0.0/16
+    region: us-east-1
+    dns_support: true
+    dns_hostnames: true
+    tags:
+      Environment: production
+    state: present
+  register: vpc
+
+- name: Créer des subnets
+  amazon.aws.ec2_vpc_subnet:
+    vpc_id: "{{ vpc.vpc.id }}"
+    cidr: "{{ item.cidr }}"
+    az: "{{ item.az }}"
+    tags:
+      Name: "{{ item.name }}"
+    state: present
+  loop:
+    - { cidr: '10.0.1.0/24', az: 'us-east-1a', name: 'Public Subnet A' }
+    - { cidr: '10.0.2.0/24', az: 'us-east-1b', name: 'Public Subnet B' }
+    - { cidr: '10.0.10.0/24', az: 'us-east-1a', name: 'Private Subnet A' }
+```
+
+### Modules GCP
+
+#### google.cloud.gcp_compute_instance
+
+Gère les instances Compute Engine.
+
+```yaml
+- name: Créer une instance GCE
+  google.cloud.gcp_compute_instance:
+    name: web-server-01
+    machine_type: n1-standard-1
+    zone: us-central1-a
+    project: my-project-id
+    auth_kind: serviceaccount
+    service_account_file: /path/to/credentials.json
+    disks:
+      - auto_delete: true
+        boot: true
+        initialize_params:
+          source_image: projects/debian-cloud/global/images/family/debian-11
+          disk_size_gb: 20
+    network_interfaces:
+      - network: default
+        access_configs:
+          - name: External NAT
+            type: ONE_TO_ONE_NAT
+    tags:
+      items:
+        - http-server
+        - https-server
+    metadata:
+      startup-script: |
+        #!/bin/bash
+        apt-get update
+        apt-get install -y nginx
+    state: present
+
+- name: Arrêter une instance
+  google.cloud.gcp_compute_instance:
+    name: web-server-01
+    zone: us-central1-a
+    project: my-project-id
+    auth_kind: serviceaccount
+    service_account_file: /path/to/credentials.json
+    state: stopped
+
+- name: Supprimer une instance
+  google.cloud.gcp_compute_instance:
+    name: web-server-01
+    zone: us-central1-a
+    project: my-project-id
+    auth_kind: serviceaccount
+    service_account_file: /path/to/credentials.json
+    state: absent
+```
+
+### Modules Azure
+
+#### azure.azcollection.azure_rm_virtualmachine
+
+Gère les machines virtuelles Azure.
+
+```yaml
+- name: Créer une VM Azure
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: myResourceGroup
+    name: myVM
+    vm_size: Standard_B2s
+    admin_username: azureuser
+    ssh_password_enabled: false
+    ssh_public_keys:
+      - path: /home/azureuser/.ssh/authorized_keys
+        key_data: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+    image:
+      offer: UbuntuServer
+      publisher: Canonical
+      sku: 18.04-LTS
+      version: latest
+    os_disk:
+      caching: ReadWrite
+      managed_disk_type: Premium_LRS
+      disk_size_gb: 64
+    network_interfaces:
+      - name: myNIC
+    tags:
+      environment: production
+      application: web
+
+- name: Démarrer une VM
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: myResourceGroup
+    name: myVM
+    started: true
+
+- name: Arrêter une VM
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: myResourceGroup
+    name: myVM
+    allocated: false
+
+- name: Supprimer une VM
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: myResourceGroup
+    name: myVM
+    state: absent
+```
+
+## Modules Réseau
+
+### Cisco IOS
+
+#### cisco.ios.ios_config
+
+Configure les équipements Cisco IOS.
+
+```yaml
+- name: Configurer une interface
+  cisco.ios.ios_config:
+    lines:
+      - description Production Interface
+      - ip address 192.168.1.1 255.255.255.0
+      - no shutdown
+    parents: interface GigabitEthernet0/1
+    save_when: modified
+
+- name: Configurer une ACL
+  cisco.ios.ios_config:
+    lines:
+      - permit tcp any any eq 80
+      - permit tcp any any eq 443
+      - deny ip any any
+    parents: ip access-list extended WEB-ACL
+    before: no ip access-list extended WEB-ACL
+    save_when: modified
+
+- name: Configurer OSPF
+  cisco.ios.ios_config:
+    lines:
+      - network 192.168.1.0 0.0.0.255 area 0
+      - network 10.0.0.0 0.255.255.255 area 1
+    parents: router ospf 1
+    save_when: modified
+
+- name: Backup de configuration avant modification
+  cisco.ios.ios_config:
+    lines:
+      - hostname NEW-ROUTER-NAME
+    backup: true
+    backup_options:
+      filename: "{{ inventory_hostname }}_config.txt"
+      dir_path: /backup/network/
+```
+
+### Cisco NX-OS
+
+#### cisco.nxos.nxos_config
+
+Configure les équipements Cisco NX-OS.
+
+```yaml
+- name: Configurer une interface sur Nexus
+  cisco.nxos.nxos_config:
+    lines:
+      - description Uplink to Core
+      - switchport mode trunk
+      - switchport trunk allowed vlan 10,20,30
+    parents: interface Ethernet1/1
+    save_when: modified
+
+- name: Configurer un VLAN
+  cisco.nxos.nxos_config:
+    lines:
+      - vlan 100
+      - name Production
+    save_when: modified
+
+- name: Configurer BGP
+  cisco.nxos.nxos_config:
+    lines:
+      - neighbor 10.0.0.2 remote-as 65001
+      - address-family ipv4 unicast
+    parents:
+      - router bgp 65000
+    save_when: modified
+```
+
+## Modules Conteneurs
+
+### Docker
+
+#### community.docker.docker_container
+
+Gère les conteneurs Docker.
+
+```yaml
+- name: Lancer un conteneur nginx
+  community.docker.docker_container:
+    name: nginx-web
+    image: nginx:latest
+    state: started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /local/html:/usr/share/nginx/html:ro
+      - /local/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart_policy: always
+
+- name: Lancer avec variables d'environnement
+  community.docker.docker_container:
+    name: app
+    image: myapp:1.0
+    state: started
+    env:
+      DATABASE_URL: "postgresql://db:5432/mydb"
+      REDIS_HOST: "redis"
+      APP_ENV: "production"
+    networks:
+      - name: app-network
+
+- name: Lancer avec labels
+  community.docker.docker_container:
+    name: monitoring
+    image: prometheus:latest
+    state: started
+    labels:
+      app: "monitoring"
+      environment: "production"
+      version: "2.0"
+
+- name: Lancer avec healthcheck
+  community.docker.docker_container:
+    name: api
+    image: api:latest
+    state: started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+- name: Arrêter et supprimer un conteneur
+  community.docker.docker_container:
+    name: old-app
+    state: absent
+```
+
+#### community.docker.docker_image
+
+Gère les images Docker.
+
+```yaml
+- name: Pull une image
+  community.docker.docker_image:
+    name: postgres:15
+    source: pull
+    state: present
+
+- name: Build une image depuis un Dockerfile
+  community.docker.docker_image:
+    name: myapp:latest
+    source: build
+    build:
+      path: /path/to/app
+      dockerfile: Dockerfile
+      pull: true
+      args:
+        BUILD_ENV: production
+
+- name: Build avec buildargs
+  community.docker.docker_image:
+    name: myapp:1.0
+    source: build
+    build:
+      path: /path/to/app
+      args:
+        PYTHON_VERSION: "3.11"
+        NODE_VERSION: "20"
+    state: present
+
+- name: Tag une image
+  community.docker.docker_image:
+    name: myapp:latest
+    repository: registry.example.com/myapp:v1.0
+    source: local
+    state: present
+
+- name: Push vers un registry
+  community.docker.docker_image:
+    name: myapp:latest
+    repository: registry.example.com/myapp:latest
+    push: true
+    source: local
+
+- name: Supprimer une image
+  community.docker.docker_image:
+    name: old-image:1.0
+    state: absent
+```
+
+#### community.docker.docker_network
+
+Gère les réseaux Docker.
+
+```yaml
+- name: Créer un réseau bridge
+  community.docker.docker_network:
+    name: app-network
+    driver: bridge
+    state: present
+
+- name: Créer un réseau avec configuration
+  community.docker.docker_network:
+    name: backend-network
+    driver: bridge
+    ipam_config:
+      - subnet: 172.20.0.0/16
+        gateway: 172.20.0.1
+    state: present
+
+- name: Supprimer un réseau
+  community.docker.docker_network:
+    name: old-network
+    state: absent
+```
+
+#### community.docker.docker_compose
+
+Gère les applications Docker Compose.
+
+```yaml
+- name: Démarrer une stack Docker Compose
+  community.docker.docker_compose:
+    project_src: /path/to/docker-compose
+    state: present
+    build: false
+    restarted: false
+
+- name: Rebuild et redémarrer
+  community.docker.docker_compose:
+    project_src: /path/to/docker-compose
+    build: true
+    restarted: true
+    state: present
+
+- name: Arrêter une stack
+  community.docker.docker_compose:
+    project_src: /path/to/docker-compose
+    state: absent
+```
+
+### Kubernetes
+
+#### kubernetes.core.k8s
+
+Gère les ressources Kubernetes.
+
+```yaml
+- name: Créer un namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: production
+
+- name: Créer un deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: nginx-deployment
+        namespace: production
+      spec:
+        replicas: 3
+        selector:
+          matchLabels:
+            app: nginx
+        template:
+          metadata:
+            labels:
+              app: nginx
+          spec:
+            containers:
+            - name: nginx
+              image: nginx:1.25
+              ports:
+              - containerPort: 80
+
+- name: Créer un service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: nginx-service
+        namespace: production
+      spec:
+        selector:
+          app: nginx
+        ports:
+        - protocol: TCP
+          port: 80
+          targetPort: 80
+        type: LoadBalancer
+
+- name: Créer un ConfigMap depuis un fichier
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: app-config
+        namespace: production
+      data:
+        config.yaml: "{{ lookup('file', '/local/config.yaml') }}"
+
+- name: Créer un Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: db-credentials
+        namespace: production
+      type: Opaque
+      stringData:
+        username: admin
+        password: "{{ db_password }}"
+
+- name: Déployer depuis un manifeste YAML
+  kubernetes.core.k8s:
+    state: present
+    src: /path/to/deployment.yaml
+    namespace: production
+
+- name: Supprimer une ressource
+  kubernetes.core.k8s:
+    state: absent
+    kind: Deployment
+    name: nginx-deployment
+    namespace: production
+
+- name: Scaler un deployment
+  kubernetes.core.k8s_scale:
+    kind: Deployment
+    name: nginx-deployment
+    namespace: production
+    replicas: 5
+```
+
+## Plugins Ansible
+
+Les plugins étendent les fonctionnalités d'Ansible dans différents aspects de son exécution.
+
+### Types de Plugins
+
+#### 1. Connection Plugins
+
+Définissent comment Ansible se connecte aux hôtes cibles.
+
+**Plugins courants :**
+- `ssh` - Connexion SSH (par défaut)
+- `local` - Exécution locale
+- `docker` - Connexion à des conteneurs Docker
+- `winrm` - Connexion Windows
+- `kubectl` - Connexion à des pods Kubernetes
+
+**Configuration dans l'inventaire :**
+
+```ini
+[webservers]
+web1 ansible_connection=ssh
+web2 ansible_connection=ssh
+
+[containers]
+app1 ansible_connection=docker
+app2 ansible_connection=docker
+
+[windows]
+win1 ansible_connection=winrm ansible_winrm_transport=ntlm
+```
+
+**Configuration dans un playbook :**
+
+```yaml
+- name: Gérer des conteneurs Docker
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Exécuter une commande dans un conteneur
+      ansible.builtin.shell: echo "Hello"
+      delegate_to: mycontainer
+      vars:
+        ansible_connection: docker
+```
+
+#### 2. Callback Plugins
+
+Contrôlent l'affichage et le traitement des événements Ansible.
+
+**Plugins courants :**
+- `default` - Affichage standard
+- `json` - Sortie JSON
+- `yaml` - Sortie YAML
+- `minimal` - Sortie minimale
+- `profile_tasks` - Profiling des tâches
+- `timer` - Temps d'exécution total
+
+**Activation dans ansible.cfg :**
+
+```ini
+[defaults]
+stdout_callback = yaml
+callbacks_enabled = profile_tasks, timer
+```
+
+**Exemple avec profile_tasks :**
+
+```yaml
+# ansible.cfg
+[defaults]
+callbacks_enabled = profile_tasks
+
+# Playbook exécuté avec timing de chaque tâche
+- name: Test performance
+  hosts: localhost
+  tasks:
+    - name: Tâche rapide
+      ansible.builtin.debug:
+        msg: "Quick task"
+
+    - name: Tâche lente
+      ansible.builtin.shell: sleep 5
+```
+
+**Créer un callback plugin personnalisé :**
+
+```python
+# plugins/callback/custom_logger.py
+from ansible.plugins.callback import CallbackBase
+from datetime import datetime
+
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = 'notification'
+    CALLBACK_NAME = 'custom_logger'
+
+    def v2_playbook_on_task_start(self, task, is_conditional):
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self._display.display(f"[{timestamp}] Starting: {task.get_name()}")
+
+    def v2_runner_on_ok(self, result):
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        host = result._host.get_name()
+        task = result._task.get_name()
+        self._display.display(f"[{timestamp}] OK: {host} - {task}", color='green')
+```
+
+#### 3. Lookup Plugins
+
+Récupèrent des données depuis des sources externes.
+
+**Plugins courants :**
+- `file` - Lire des fichiers
+- `env` - Variables d'environnement
+- `password` - Générer des mots de passe
+- `pipe` - Exécuter des commandes shell
+- `template` - Templating Jinja2
+- `url` - Récupérer depuis HTTP/HTTPS
+- `csvfile` - Lire des fichiers CSV
+- `ini` - Lire des fichiers INI
+
+**Exemples d'utilisation :**
+
+```yaml
+- name: Exemples de lookup plugins
+  hosts: localhost
+  tasks:
+    - name: Lire un fichier
+      ansible.builtin.debug:
+        msg: "{{ lookup('file', '/etc/hostname') }}"
+
+    - name: Utiliser une variable d'environnement
+      ansible.builtin.debug:
+        msg: "Home is {{ lookup('env', 'HOME') }}"
+
+    - name: Générer un mot de passe
+      ansible.builtin.debug:
+        msg: "{{ lookup('password', '/tmp/passwordfile length=15 chars=ascii_letters,digits') }}"
+
+    - name: Exécuter une commande
+      ansible.builtin.debug:
+        msg: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+
+    - name: Récupérer depuis une URL
+      ansible.builtin.debug:
+        msg: "{{ lookup('url', 'https://api.example.com/version') }}"
+
+    - name: Lire depuis CSV
+      ansible.builtin.debug:
+        msg: "{{ lookup('csvfile', 'user1 file=/path/to/users.csv delimiter=,') }}"
+
+    - name: Template inline
+      ansible.builtin.debug:
+        msg: "{{ lookup('template', 'templates/message.j2') }}"
+```
+
+**Créer un lookup plugin personnalisé :**
+
+```python
+# plugins/lookup/vault_secret.py
+from ansible.plugins.lookup import LookupBase
+from ansible.errors import AnsibleError
+import hvac
+
+class LookupModule(LookupBase):
+    def run(self, terms, variables=None, **kwargs):
+        # Se connecter à Vault
+        client = hvac.Client(url='https://vault.example.com')
+        client.token = kwargs.get('token')
+
+        results = []
+        for term in terms:
+            try:
+                secret = client.secrets.kv.v2.read_secret_version(path=term)
+                results.append(secret['data']['data'])
+            except Exception as e:
+                raise AnsibleError(f"Failed to retrieve {term}: {str(e)}")
+
+        return results
+```
+
+**Usage :**
+
+```yaml
+- name: Récupérer un secret depuis Vault
+  ansible.builtin.debug:
+    msg: "{{ lookup('vault_secret', 'secret/database', token=vault_token) }}"
+```
+
+#### 4. Filter Plugins
+
+Transforment des données dans les templates Jinja2.
+
+**Filters courants :**
+- `to_json` / `from_json` - Conversion JSON
+- `to_yaml` / `from_yaml` - Conversion YAML
+- `b64encode` / `b64decode` - Base64
+- `hash` - Hashing (md5, sha256, etc.)
+- `regex_search` / `regex_replace` - Expressions régulières
+- `ipaddr` - Manipulation d'adresses IP
+- `default` - Valeur par défaut
+
+**Exemples d'utilisation :**
+
+```yaml
+- name: Exemples de filters
+  hosts: localhost
+  vars:
+    config:
+      database: postgres
+      host: localhost
+      port: 5432
+    password: "mypassword"
+    ip_list: ["192.168.1.10", "192.168.1.20", "10.0.0.5"]
+  tasks:
+    - name: Convertir en JSON
+      ansible.builtin.debug:
+        msg: "{{ config | to_json }}"
+
+    - name: Encoder en base64
+      ansible.builtin.debug:
+        msg: "{{ password | b64encode }}"
+
+    - name: Hash SHA256
+      ansible.builtin.debug:
+        msg: "{{ password | hash('sha256') }}"
+
+    - name: Regex replace
+      ansible.builtin.debug:
+        msg: "{{ 'hello world' | regex_replace('world', 'ansible') }}"
+
+    - name: Filtrer les IPs privées
+      ansible.builtin.debug:
+        msg: "{{ ip_list | ipaddr('private') }}"
+
+    - name: Valeur par défaut
+      ansible.builtin.debug:
+        msg: "{{ undefined_var | default('default_value') }}"
+
+    - name: Liste unique
+      ansible.builtin.debug:
+        msg: "{{ [1, 2, 2, 3, 3, 3] | unique }}"
+
+    - name: Combiner des dictionnaires
+      ansible.builtin.debug:
+        msg: "{{ dict1 | combine(dict2) }}"
+```
+
+**Créer un filter plugin personnalisé :**
+
+```python
+# plugins/filter/custom_filters.py
+def reverse_string(value):
+    """Inverse une chaîne de caractères"""
+    return value[::-1]
+
+def multiply_by(value, factor=2):
+    """Multiplie un nombre par un facteur"""
+    return value * factor
+
+def extract_domain(email):
+    """Extrait le domaine d'une adresse email"""
+    return email.split('@')[1] if '@' in email else ''
+
+class FilterModule(object):
+    def filters(self):
+        return {
+            'reverse': reverse_string,
+            'multiply': multiply_by,
+            'domain': extract_domain
+        }
+```
+
+**Usage :**
+
+```yaml
+- name: Utiliser les filters personnalisés
+  hosts: localhost
+  tasks:
+    - name: Inverser une chaîne
+      ansible.builtin.debug:
+        msg: "{{ 'hello' | reverse }}"
+
+    - name: Multiplier un nombre
+      ansible.builtin.debug:
+        msg: "{{ 10 | multiply(5) }}"
+
+    - name: Extraire le domaine
+      ansible.builtin.debug:
+        msg: "{{ 'user@example.com' | domain }}"
+```
+
+#### 5. Inventory Plugins
+
+Génèrent dynamiquement des inventaires depuis des sources externes.
+
+**Plugins courants :**
+- `ini` - Fichiers INI statiques
+- `yaml` - Fichiers YAML statiques
+- `script` - Scripts dynamiques
+- `aws_ec2` - Inventaire AWS EC2
+- `gcp_compute` - Inventaire GCP
+- `azure_rm` - Inventaire Azure
+- `docker` - Conteneurs Docker
+- `openstack` - Inventaire OpenStack
+
+**Exemple : Inventaire dynamique AWS EC2**
+
+```yaml
+# inventory/aws_ec2.yaml
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+  - us-west-2
+filters:
+  tag:Environment: production
+  instance-state-name: running
+keyed_groups:
+  - key: tags.Application
+    prefix: app
+  - key: tags.Environment
+    prefix: env
+hostnames:
+  - tag:Name
+compose:
+  ansible_host: public_ip_address
+```
+
+**Exemple : Inventaire dynamique GCP**
+
+```yaml
+# inventory/gcp_compute.yaml
+plugin: google.cloud.gcp_compute
+projects:
+  - my-project-id
+auth_kind: serviceaccount
+service_account_file: /path/to/credentials.json
+filters:
+  - labels.environment = production
+keyed_groups:
+  - key: labels.application
+    prefix: app
+  - key: zone
+    prefix: zone
+```
+
+**Créer un inventory plugin personnalisé :**
+
+```python
+# plugins/inventory/custom_inventory.py
+from ansible.plugins.inventory import BaseInventoryPlugin
+import requests
+
+class InventoryModule(BaseInventoryPlugin):
+    NAME = 'custom_inventory'
+
+    def verify_file(self, path):
+        return path.endswith('custom.yaml')
+
+    def parse(self, inventory, loader, path, cache=True):
+        super(InventoryModule, self).parse(inventory, loader, path, cache)
+
+        # Récupérer les hôtes depuis une API
+        response = requests.get('https://api.example.com/servers')
+        servers = response.json()
+
+        for server in servers:
+            # Ajouter l'hôte
+            self.inventory.add_host(server['hostname'])
+
+            # Définir les variables
+            self.inventory.set_variable(
+                server['hostname'],
+                'ansible_host',
+                server['ip_address']
+            )
+
+            # Ajouter aux groupes
+            group = server.get('environment', 'ungrouped')
+            self.inventory.add_group(group)
+            self.inventory.add_host(server['hostname'], group=group)
+```
+
+#### 6. Vars Plugins
+
+Injectent des variables dans Ansible depuis des sources externes.
+
+**Plugins courants :**
+- `host_group_vars` - Variables depuis host_vars/ et group_vars/
+- `ansible_env` - Variables d'environnement
+- `aws_ssm` - AWS Systems Manager Parameter Store
+
+**Créer un vars plugin personnalisé :**
+
+```python
+# plugins/vars/vault_vars.py
+from ansible.plugins.vars import BaseVarsPlugin
+import hvac
+
+class VarsModule(BaseVarsPlugin):
+    def get_vars(self, loader, path, entities):
+        super(VarsModule, self).get_vars(loader, path, entities)
+
+        data = {}
+        client = hvac.Client(url='https://vault.example.com')
+        client.token = os.environ.get('VAULT_TOKEN')
+
+        for entity in entities:
+            if hasattr(entity, 'name'):
+                # Récupérer les secrets pour cet hôte
+                try:
+                    secret = client.secrets.kv.v2.read_secret_version(
+                        path=f'ansible/{entity.name}'
+                    )
+                    data.update(secret['data']['data'])
+                except:
+                    pass
+
+        return data
+```
+
+## Création d'un Module Custom Python
+
+### Structure d'un Module
+
+Un module Ansible custom est un script Python qui suit une structure spécifique.
+
+**Exemple minimal :**
+
+```python
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Copyright: (c) 2024, Votre Nom <email@example.com>
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
+DOCUMENTATION = r'''
+---
+module: hello_world
+short_description: Un module d'exemple qui dit bonjour
+version_added: "1.0.0"
+description:
+    - Ce module dit bonjour à un utilisateur spécifié
+    - Il peut personnaliser le message de salutation
+options:
+    name:
+        description:
+            - Le nom de la personne à saluer
+        required: true
+        type: str
+    greeting:
+        description:
+            - Le message de salutation à utiliser
+        required: false
+        type: str
+        default: 'Hello'
+author:
+    - Votre Nom (@votre_github)
+'''
+
+EXAMPLES = r'''
+# Exemple basique
+- name: Dire bonjour à John
+  hello_world:
+    name: John
+
+# Exemple avec greeting personnalisé
+- name: Dire bonjour en français
+  hello_world:
+    name: Marie
+    greeting: Bonjour
+
+# Utiliser le résultat
+- name: Capturer le message
+  hello_world:
+    name: Alice
+  register: result
+
+- name: Afficher le message
+  debug:
+    msg: "{{ result.message }}"
+'''
+
+RETURN = r'''
+message:
+    description: Le message de salutation complet
+    type: str
+    returned: always
+    sample: 'Hello John!'
+original_name:
+    description: Le nom fourni en entrée
+    type: str
+    returned: always
+    sample: 'John'
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+
+def run_module():
+    # Définir les arguments du module
+    module_args = dict(
+        name=dict(type='str', required=True),
+        greeting=dict(type='str', required=False, default='Hello')
+    )
+
+    # Résultat par défaut
+    result = dict(
+        changed=False,
+        message='',
+        original_name=''
+    )
+
+    # Créer le module
+    module = AnsibleModule(
+        argument_spec=module_args,
+        supports_check_mode=True
+    )
+
+    # En mode check, ne rien faire
+    if module.check_mode:
+        module.exit_json(**result)
+
+    # Récupérer les paramètres
+    name = module.params['name']
+    greeting = module.params['greeting']
+
+    # Générer le message
+    result['message'] = f"{greeting} {name}!"
+    result['original_name'] = name
+    result['changed'] = False
+
+    # Retourner le résultat
+    module.exit_json(**result)
+
+def main():
+    run_module()
+
+if __name__ == '__main__':
+    main()
+```
+
+### Module avec Logique Complexe
+
+**Exemple : Module de gestion d'utilisateur personnalisé**
+
+```python
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
+DOCUMENTATION = r'''
+---
+module: custom_user
+short_description: Gère les utilisateurs avec fonctionnalités étendues
+description:
+    - Crée, modifie ou supprime des utilisateurs
+    - Gère les quotas d'espace disque
+    - Configure les politiques de mot de passe
+options:
+    name:
+        description: Nom d'utilisateur
+        required: true
+        type: str
+    state:
+        description: État souhaité de l'utilisateur
+        required: false
+        type: str
+        choices: ['present', 'absent']
+        default: 'present'
+    quota:
+        description: Quota d'espace disque en GB
+        required: false
+        type: int
+        default: 10
+    password_expire_days:
+        description: Nombre de jours avant expiration du mot de passe
+        required: false
+        type: int
+        default: 90
+'''
+
+EXAMPLES = r'''
+- name: Créer un utilisateur avec quota
+  custom_user:
+    name: johndoe
+    state: present
+    quota: 50
+    password_expire_days: 60
+
+- name: Supprimer un utilisateur
+  custom_user:
+    name: johndoe
+    state: absent
+'''
+
+RETURN = r'''
+user:
+    description: Informations sur l'utilisateur
+    type: dict
+    returned: always
+quota_set:
+    description: Si le quota a été configuré
+    type: bool
+    returned: when state is present
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+import subprocess
+import pwd
+
+def user_exists(name):
+    """Vérifie si l'utilisateur existe"""
+    try:
+        pwd.getpwnam(name)
+        return True
+    except KeyError:
+        return False
+
+def create_user(module, name):
+    """Crée un utilisateur"""
+    cmd = ['useradd', name]
+    rc, stdout, stderr = module.run_command(cmd)
+
+    if rc != 0:
+        module.fail_json(msg=f"Failed to create user: {stderr}")
+
+    return True
+
+def delete_user(module, name):
+    """Supprime un utilisateur"""
+    cmd = ['userdel', '-r', name]
+    rc, stdout, stderr = module.run_command(cmd)
+
+    if rc != 0:
+        module.fail_json(msg=f"Failed to delete user: {stderr}")
+
+    return True
+
+def set_quota(module, name, quota):
+    """Configure le quota disque"""
+    cmd = ['setquota', '-u', name, str(quota * 1024 * 1024), str(quota * 1024 * 1024), '0', '0', '/']
+    rc, stdout, stderr = module.run_command(cmd)
+
+    if rc != 0:
+        module.fail_json(msg=f"Failed to set quota: {stderr}")
+
+    return True
+
+def set_password_expiry(module, name, days):
+    """Configure l'expiration du mot de passe"""
+    cmd = ['chage', '-M', str(days), name]
+    rc, stdout, stderr = module.run_command(cmd)
+
+    if rc != 0:
+        module.fail_json(msg=f"Failed to set password expiry: {stderr}")
+
+    return True
+
+def run_module():
+    module_args = dict(
+        name=dict(type='str', required=True),
+        state=dict(type='str', required=False, default='present', choices=['present', 'absent']),
+        quota=dict(type='int', required=False, default=10),
+        password_expire_days=dict(type='int', required=False, default=90)
+    )
+
+    result = dict(
+        changed=False,
+        user={},
+        quota_set=False
+    )
+
+    module = AnsibleModule(
+        argument_spec=module_args,
+        supports_check_mode=True
+    )
+
+    name = module.params['name']
+    state = module.params['state']
+    quota = module.params['quota']
+    expire_days = module.params['password_expire_days']
+
+    exists = user_exists(name)
+
+    if state == 'present':
+        if not exists:
+            if module.check_mode:
+                result['changed'] = True
+                module.exit_json(**result)
+
+            create_user(module, name)
+            result['changed'] = True
+            result['user']['created'] = True
+
+        # Configurer le quota
+        if not module.check_mode:
+            set_quota(module, name, quota)
+            set_password_expiry(module, name, expire_days)
+            result['quota_set'] = True
+
+        result['user']['name'] = name
+        result['user']['quota_gb'] = quota
+        result['user']['password_expire_days'] = expire_days
+
+    elif state == 'absent':
+        if exists:
+            if module.check_mode:
+                result['changed'] = True
+                module.exit_json(**result)
+
+            delete_user(module, name)
+            result['changed'] = True
+            result['user']['deleted'] = True
+
+    module.exit_json(**result)
+
+def main():
+    run_module()
+
+if __name__ == '__main__':
+    main()
+```
+
+### Module avec Gestion d'Erreurs
+
+```python
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
+DOCUMENTATION = r'''
+---
+module: api_client
+short_description: Interagit avec une API REST
+description:
+    - Effectue des requêtes vers une API
+    - Gère l'authentification et les erreurs
+options:
+    url:
+        description: URL de l'API
+        required: true
+        type: str
+    method:
+        description: Méthode HTTP
+        required: false
+        type: str
+        choices: ['GET', 'POST', 'PUT', 'DELETE']
+        default: 'GET'
+    api_key:
+        description: Clé d'API pour l'authentification
+        required: true
+        type: str
+        no_log: true
+    data:
+        description: Données à envoyer (pour POST/PUT)
+        required: false
+        type: dict
+    timeout:
+        description: Timeout en secondes
+        required: false
+        type: int
+        default: 30
+'''
+
+EXAMPLES = r'''
+- name: GET request
+  api_client:
+    url: https://api.example.com/users
+    method: GET
+    api_key: "{{ api_key }}"
+
+- name: POST request
+  api_client:
+    url: https://api.example.com/users
+    method: POST
+    api_key: "{{ api_key }}"
+    data:
+      name: John Doe
+      email: john@example.com
+'''
+
+RETURN = r'''
+response:
+    description: Réponse de l'API
+    type: dict
+    returned: success
+status_code:
+    description: Code de statut HTTP
+    type: int
+    returned: always
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+from ansible.module_utils.urls import fetch_url
+import json
+
+def run_module():
+    module_args = dict(
+        url=dict(type='str', required=True),
+        method=dict(type='str', required=False, default='GET', choices=['GET', 'POST', 'PUT', 'DELETE']),
+        api_key=dict(type='str', required=True, no_log=True),
+        data=dict(type='dict', required=False, default=None),
+        timeout=dict(type='int', required=False, default=30)
+    )
+
+    result = dict(
+        changed=False,
+        response={},
+        status_code=0
+    )
+
+    module = AnsibleModule(
+        argument_spec=module_args,
+        supports_check_mode=True
+    )
+
+    if module.check_mode:
+        module.exit_json(**result)
+
+    url = module.params['url']
+    method = module.params['method']
+    api_key = module.params['api_key']
+    data = module.params['data']
+    timeout = module.params['timeout']
+
+    # Préparer les headers
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json'
+    }
+
+    # Préparer les données
+    body = None
+    if data and method in ['POST', 'PUT']:
+        try:
+            body = json.dumps(data)
+        except Exception as e:
+            module.fail_json(msg=f"Failed to serialize data: {str(e)}")
+
+    # Effectuer la requête
+    try:
+        response, info = fetch_url(
+            module,
+            url,
+            data=body,
+            headers=headers,
+            method=method,
+            timeout=timeout
+        )
+
+        result['status_code'] = info['status']
+
+        # Lire la réponse
+        if response:
+            try:
+                content = response.read()
+                result['response'] = json.loads(content)
+            except json.JSONDecodeError:
+                result['response'] = content.decode('utf-8')
+
+        # Vérifier le code de statut
+        if info['status'] >= 400:
+            module.fail_json(
+                msg=f"API request failed with status {info['status']}",
+                **result
+            )
+
+        # Marquer comme changed pour POST/PUT/DELETE
+        if method in ['POST', 'PUT', 'DELETE']:
+            result['changed'] = True
+
+        module.exit_json(**result)
+
+    except Exception as e:
+        module.fail_json(msg=f"API request failed: {str(e)}", **result)
+
+def main():
+    run_module()
+
+if __name__ == '__main__':
+    main()
+```
+
+### Placement des Modules Custom
+
+**Structure de répertoire recommandée :**
+
+```
+ansible-project/
+├── library/                    # Modules custom
+│   ├── hello_world.py
+│   ├── custom_user.py
+│   └── api_client.py
+├── module_utils/              # Utilitaires partagés
+│   └── common.py
+├── plugins/
+│   ├── filter/                # Filter plugins
+│   ├── lookup/                # Lookup plugins
+│   ├── inventory/             # Inventory plugins
+│   ├── callback/              # Callback plugins
+│   └── vars/                  # Vars plugins
+├── playbooks/
+│   └── site.yml
+└── ansible.cfg
+```
+
+**Configuration dans ansible.cfg :**
+
+```ini
+[defaults]
+library = ./library
+module_utils = ./module_utils
+filter_plugins = ./plugins/filter
+lookup_plugins = ./plugins/lookup
+inventory_plugins = ./plugins/inventory
+callback_plugins = ./plugins/callback
+vars_plugins = ./plugins/vars
+```
+
+### Test d'un Module Custom
+
+```yaml
+# test_custom_module.yml
+---
+- name: Tester les modules custom
+  hosts: localhost
+  tasks:
+    - name: Tester hello_world
+      hello_world:
+        name: Ansible
+        greeting: Bonjour
+      register: result
+
+    - name: Afficher le résultat
+      ansible.builtin.debug:
+        var: result
+
+    - name: Tester custom_user
+      custom_user:
+        name: testuser
+        state: present
+        quota: 20
+        password_expire_days: 60
+      become: true
+
+    - name: Tester api_client
+      api_client:
+        url: https://api.example.com/health
+        method: GET
+        api_key: "{{ api_key }}"
+      register: api_result
+
+    - name: Afficher la réponse API
+      ansible.builtin.debug:
+        var: api_result.response
+```
+
+Cette documentation couvre les modules et plugins essentiels d'Ansible, permettant une automatisation complète de l'infrastructure on-premise et cloud.

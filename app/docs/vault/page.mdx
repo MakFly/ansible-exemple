@@ -1,0 +1,2039 @@
+# Vault & Sécurité
+
+## Introduction
+
+Ansible Vault est une fonctionnalité intégrée qui permet de chiffrer les données sensibles (mots de passe, clés API, certificats) directement dans vos playbooks et inventaires. Il utilise le chiffrement AES-256 et s'intègre de manière transparente dans votre workflow Ansible.
+
+**Pourquoi utiliser Vault ?**
+- Stocker des secrets dans Git en toute sécurité
+- Partager des playbooks sans exposer les credentials
+- Respecter les standards de sécurité (SOC 2, ISO 27001, PCI DSS)
+- Traçabilité et versioning des secrets
+
+## Commandes `ansible-vault`
+
+### `ansible-vault create` - Créer un fichier chiffré
+
+Crée un nouveau fichier chiffré et l'ouvre dans votre éditeur.
+
+```bash
+# Créer un fichier chiffré (demande le mot de passe)
+ansible-vault create secrets.yml
+
+# Contenu du fichier (avant chiffrement) :
+---
+db_password: "MyS3cr3tP@ssw0rd"
+api_key: "sk-1234567890abcdef"
+```
+
+**Avec un fichier de mot de passe :**
+
+```bash
+# Créer avec un fichier de mot de passe
+ansible-vault create --vault-password-file=.vault_pass secrets.yml
+```
+
+**Spécifier l'éditeur :**
+
+```bash
+# Utiliser vim au lieu de vi/nano
+EDITOR=vim ansible-vault create secrets.yml
+
+# Utiliser VSCode
+EDITOR="code --wait" ansible-vault create secrets.yml
+```
+
+### `ansible-vault edit` - Éditer un fichier chiffré
+
+Édite un fichier chiffré existant (déchiffrement temporaire).
+
+```bash
+# Éditer le fichier (demande le mot de passe)
+ansible-vault edit secrets.yml
+
+# Avec un fichier de mot de passe
+ansible-vault edit --vault-password-file=.vault_pass secrets.yml
+
+# Avec un vault-id spécifique
+ansible-vault edit --vault-id prod@.vault_pass_prod secrets_prod.yml
+```
+
+**Modification du contenu :**
+```yaml
+# Avant
+db_password: "OldPassword123"
+
+# Après (modifié dans l'éditeur)
+db_password: "NewPassword456"
+db_host: "db.example.com"  # Nouvelle variable ajoutée
+```
+
+### `ansible-vault encrypt` - Chiffrer un fichier existant
+
+Chiffre un fichier en clair existant.
+
+```bash
+# Chiffrer un fichier
+ansible-vault encrypt group_vars/production/vault.yml
+
+# Chiffrer plusieurs fichiers
+ansible-vault encrypt secrets.yml credentials.yml tokens.yml
+
+# Chiffrer avec un vault-id
+ansible-vault encrypt --vault-id prod@prompt group_vars/prod/vault.yml
+
+# Chiffrer en spécifiant la sortie (garde l'original)
+ansible-vault encrypt --output=secrets.enc secrets.yml
+```
+
+**Exemple complet :**
+
+```bash
+# 1. Créer un fichier de secrets en clair
+cat > db_credentials.yml << 'EOF'
+---
+mysql_root_password: "root123"
+mysql_user: "appuser"
+mysql_password: "apppass456"
+EOF
+
+# 2. Chiffrer le fichier
+ansible-vault encrypt db_credentials.yml
+# Output: Encryption successful
+
+# 3. Vérifier le contenu chiffré
+cat db_credentials.yml
+# $ANSIBLE_VAULT;1.1;AES256
+# 66386439653765386662323135...
+```
+
+### `ansible-vault decrypt` - Déchiffrer un fichier
+
+Déchiffre un fichier Vault en fichier clair.
+
+```bash
+# Déchiffrer un fichier
+ansible-vault decrypt secrets.yml
+
+# Déchiffrer vers un fichier de sortie (garde l'original chiffré)
+ansible-vault decrypt --output=secrets_plain.yml secrets.yml
+
+# Déchiffrer avec un vault-id
+ansible-vault decrypt --vault-id dev@.vault_pass_dev secrets_dev.yml
+```
+
+**⚠️ Attention :** Le fichier déchiffré contient des secrets en clair. Ne le committez jamais !
+
+```bash
+# Ajouter au .gitignore
+echo "*_plain.yml" >> .gitignore
+echo "secrets_decrypted/" >> .gitignore
+```
+
+### `ansible-vault rekey` - Changer le mot de passe
+
+Change le mot de passe Vault d'un fichier sans le déchiffrer.
+
+```bash
+# Rekey interactif (demande l'ancien puis le nouveau mot de passe)
+ansible-vault rekey secrets.yml
+
+# Rekey avec fichiers de mots de passe
+ansible-vault rekey \
+  --vault-password-file=.vault_pass_old \
+  --new-vault-password-file=.vault_pass_new \
+  secrets.yml
+
+# Rekey de plusieurs fichiers
+ansible-vault rekey secrets.yml credentials.yml tokens.yml
+
+# Rekey avec vault-id
+ansible-vault rekey \
+  --vault-id old@.vault_pass_old \
+  --new-vault-id new@.vault_pass_new \
+  group_vars/prod/vault.yml
+```
+
+**Cas d'usage typique :**
+
+```bash
+# Rotation du mot de passe Vault tous les 90 jours
+#!/bin/bash
+
+OLD_PASS_FILE=".vault_pass"
+NEW_PASS_FILE=".vault_pass_new"
+
+# Générer un nouveau mot de passe
+openssl rand -base64 32 > $NEW_PASS_FILE
+
+# Rekey tous les fichiers Vault
+find . -name "vault.yml" -o -name "secrets.yml" | while read file; do
+  echo "Rekeying $file..."
+  ansible-vault rekey \
+    --vault-password-file=$OLD_PASS_FILE \
+    --new-vault-password-file=$NEW_PASS_FILE \
+    "$file"
+done
+
+# Remplacer l'ancien mot de passe
+mv $NEW_PASS_FILE $OLD_PASS_FILE
+```
+
+### `ansible-vault encrypt_string` - Chiffrer une variable individuelle
+
+Chiffre une seule chaîne de caractères (variable) au lieu d'un fichier entier.
+
+```bash
+# Chiffrer une chaîne interactivement
+ansible-vault encrypt_string 'MySecretPassword' --name 'db_password'
+
+# Output :
+# db_password: !vault |
+#   $ANSIBLE_VAULT;1.1;AES256
+#   66386439653765386662323135...
+
+# Avec un fichier de mot de passe
+ansible-vault encrypt_string \
+  --vault-password-file=.vault_pass \
+  'api_secret_key' \
+  --name 'api_key'
+
+# Lire depuis stdin
+echo -n 'MyPassword' | ansible-vault encrypt_string \
+  --vault-password-file=.vault_pass \
+  --stdin-name 'admin_password'
+
+# Avec un vault-id
+ansible-vault encrypt_string \
+  --vault-id prod@.vault_pass_prod \
+  'ProductionSecret' \
+  --name 'prod_api_key'
+```
+
+**Utilisation dans un playbook :**
+
+```yaml
+# playbook.yml
+---
+- name: Deploy application
+  hosts: webservers
+  vars:
+    db_host: "db.example.com"
+    db_user: "appuser"
+    db_password: !vault |
+      $ANSIBLE_VAULT;1.1;AES256
+      66386439653765386662323135353631316533626365363336646235626163366562316537333161
+      3831326362316437376165353631316533626365363336646235626163366562316537333161
+    api_key: !vault |
+      $ANSIBLE_VAULT;1.1;AES256
+      39383830393766646264343462303135353631316533626365363336646235626163366562316537
+      3232343462303135353631316533626365363336646235626163366562316537333161
+  tasks:
+    - name: Configure database connection
+      ansible.builtin.template:
+        src: config.j2
+        dest: /etc/app/config.ini
+```
+
+**Générer depuis un prompt :**
+
+```bash
+# Prompt interactif pour la valeur
+ansible-vault encrypt_string --vault-password-file=.vault_pass --stdin-name 'secret_token'
+# Tapez la valeur, puis Ctrl+D deux fois
+```
+
+### `ansible-vault view` - Afficher un fichier chiffré
+
+Affiche le contenu déchiffré d'un fichier Vault sans le modifier.
+
+```bash
+# Voir un fichier chiffré (demande le mot de passe)
+ansible-vault view secrets.yml
+
+# Avec un fichier de mot de passe
+ansible-vault view --vault-password-file=.vault_pass secrets.yml
+
+# Avec un vault-id
+ansible-vault view --vault-id prod@.vault_pass_prod secrets_prod.yml
+
+# Piper vers grep pour chercher une clé
+ansible-vault view --vault-password-file=.vault_pass secrets.yml | grep api_key
+
+# Extraire une variable spécifique
+ansible-vault view --vault-password-file=.vault_pass secrets.yml | yq .db_password
+```
+
+**Exemple dans un script :**
+
+```bash
+#!/bin/bash
+# Script pour extraire un secret Vault
+
+VAULT_FILE="group_vars/prod/vault.yml"
+VAULT_PASS=".vault_pass_prod"
+SECRET_NAME="db_password"
+
+# Extraire le secret
+SECRET=$(ansible-vault view --vault-password-file=$VAULT_PASS $VAULT_FILE | \
+         grep "^${SECRET_NAME}:" | \
+         awk '{print $2}')
+
+echo "Secret extracted: $SECRET"
+```
+
+## Chiffrement de fichiers entiers vs variables individuelles
+
+### Fichiers entiers (`ansible-vault encrypt`)
+
+**Avantages :**
+- Simple à gérer (un seul fichier chiffré)
+- Protège tout le contenu d'un coup
+- Facilite la rotation des secrets (rekey une seule fois)
+
+**Inconvénients :**
+- Le fichier entier est illisible dans Git
+- Difficile de voir les changements (git diff inutile)
+- Nécessite de déchiffrer pour inspecter
+
+**Cas d'usage :**
+- Fichiers entièrement secrets (ex: certificates, private keys)
+- group_vars/production/vault.yml avec tous les secrets d'un environnement
+
+**Exemple :**
+
+```bash
+# Structure recommandée
+group_vars/
+├── production/
+│   ├── vars.yml          # Variables publiques (non chiffré)
+│   └── vault.yml         # Secrets (chiffré avec encrypt)
+└── staging/
+    ├── vars.yml
+    └── vault.yml
+```
+
+```yaml
+# group_vars/production/vars.yml (en clair)
+---
+app_name: "myapp"
+app_version: "1.2.3"
+db_host: "db.prod.example.com"
+db_port: 3306
+
+# Référence les secrets du vault
+db_user: "{{ vault_db_user }}"
+db_password: "{{ vault_db_password }}"
+```
+
+```yaml
+# group_vars/production/vault.yml (chiffré avec encrypt)
+---
+vault_db_user: "prod_app_user"
+vault_db_password: "SuperSecretPassword123!"
+vault_api_key: "sk-prod-1234567890abcdef"
+vault_ssl_key: |
+  -----BEGIN PRIVATE KEY-----
+  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC...
+  -----END PRIVATE KEY-----
+```
+
+```bash
+# Chiffrer le vault.yml
+ansible-vault encrypt group_vars/production/vault.yml --vault-password-file=.vault_pass
+```
+
+### Variables individuelles (`!vault` tag)
+
+**Avantages :**
+- Le fichier reste lisible dans Git (seules les valeurs sont chiffrées)
+- Git diff fonctionne pour les variables non-secrètes
+- Facilite les reviews de code
+
+**Inconvénients :**
+- Plus verbeux (chaque variable chiffrée individuellement)
+- Plus complexe à maintenir
+
+**Cas d'usage :**
+- Mélange de variables publiques et secrètes dans le même fichier
+- Variables secrètes dispersées dans plusieurs fichiers
+
+**Exemple :**
+
+```yaml
+# group_vars/production/all.yml (partiellement chiffré)
+---
+# Variables publiques (en clair)
+app_name: "myapp"
+app_version: "1.2.3"
+db_host: "db.prod.example.com"
+db_port: 3306
+
+# Variables secrètes (chiffrées avec encrypt_string)
+db_password: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  66386439653765386662323135353631316533626365363336646235626163366562316537333161
+  3831326362316437376165353631316533626365363336646235626163366562316537333161
+
+api_key: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  39383830393766646264343462303135353631316533626365363336646235626163366562316537
+  3232343462303135353631316533626365363336646235626163366562316537333161
+
+# Variables publiques (en clair)
+api_endpoint: "https://api.prod.example.com"
+api_timeout: 30
+```
+
+**Génération des variables chiffrées :**
+
+```bash
+# Générer la variable db_password
+ansible-vault encrypt_string \
+  --vault-password-file=.vault_pass \
+  'SuperSecretPassword123!' \
+  --name 'db_password'
+
+# Copier le output directement dans le fichier YAML
+```
+
+### Comparaison et recommandations
+
+| Critère | Fichier entier | Variables individuelles |
+|---------|----------------|-------------------------|
+| Lisibilité dans Git | ❌ | ✅ |
+| Git diff utile | ❌ | ✅ |
+| Simplicité de gestion | ✅ | ❌ |
+| Code review facile | ❌ | ✅ |
+| Performance | ✅ (un seul déchiffrement) | ⚠️ (multiple déchiffrements) |
+| Rotation des secrets | ✅ (un rekey) | ⚠️ (multiple rekeys) |
+
+**Recommandation :**
+
+```
+group_vars/
+├── production/
+│   ├── vars.yml          # Variables publiques seulement
+│   └── vault.yml         # Fichier entièrement chiffré (secrets)
+└── all.yml               # Variables globales non-secrètes
+```
+
+## Multi-vault IDs (--vault-id)
+
+Les multi-vault IDs permettent d'utiliser **plusieurs mots de passe Vault différents** dans un même projet (ex: un par environnement).
+
+### Syntaxe de base
+
+```bash
+--vault-id label@source
+```
+
+- **label** : Identifiant du vault (prod, dev, staging)
+- **source** : Source du mot de passe (prompt, fichier, script)
+
+### Configuration dans `ansible.cfg`
+
+```ini
+[defaults]
+# Liste des vault IDs par défaut
+vault_identity_list = dev@.vault_pass_dev, staging@.vault_pass_staging, prod@.vault_pass_prod
+
+# Vault ID par défaut si non spécifié
+# vault_identity = dev
+```
+
+### Créer des fichiers avec des vault-id spécifiques
+
+```bash
+# Créer un fichier avec le vault-id "prod"
+ansible-vault create --vault-id prod@.vault_pass_prod group_vars/prod/vault.yml
+
+# Créer avec le vault-id "dev"
+ansible-vault create --vault-id dev@.vault_pass_dev group_vars/dev/vault.yml
+
+# Créer avec prompt interactif
+ansible-vault create --vault-id staging@prompt group_vars/staging/vault.yml
+```
+
+**Contenu du fichier créé :**
+
+```yaml
+# group_vars/prod/vault.yml (chiffré avec vault-id prod)
+$ANSIBLE_VAULT;1.2;AES256;prod
+66386439653765386662323135353631316533626365363336646235626163366562316537333161
+...
+```
+
+Notez le `;prod` dans l'en-tête du fichier chiffré.
+
+### Exécuter un playbook avec multi-vault
+
+```bash
+# Avec vault_identity_list dans ansible.cfg
+ansible-playbook site.yml
+
+# En ligne de commande (spécifier plusieurs vault-ids)
+ansible-playbook site.yml \
+  --vault-id dev@.vault_pass_dev \
+  --vault-id prod@.vault_pass_prod
+
+# Prompt interactif pour prod, fichier pour dev
+ansible-playbook site.yml \
+  --vault-id dev@.vault_pass_dev \
+  --vault-id prod@prompt
+```
+
+### Chiffrer des variables avec vault-id
+
+```bash
+# Chiffrer une variable avec le vault-id "prod"
+ansible-vault encrypt_string \
+  --vault-id prod@.vault_pass_prod \
+  'ProductionSecret' \
+  --name 'prod_api_key'
+
+# Output :
+# prod_api_key: !vault |
+#   $ANSIBLE_VAULT;1.2;AES256;prod
+#   66386439653765386662323135353631316533626365363336646235626163366562316537333161
+#   ...
+```
+
+### Structure de projet recommandée avec multi-vault
+
+```
+ansible-project/
+├── ansible.cfg
+├── .vault_pass_dev          # Mot de passe dev (git ignored)
+├── .vault_pass_staging      # Mot de passe staging (git ignored)
+├── .vault_pass_prod         # Mot de passe prod (git ignored)
+├── .gitignore
+├── inventory/
+│   ├── dev.ini
+│   ├── staging.ini
+│   └── prod.ini
+├── group_vars/
+│   ├── dev/
+│   │   ├── vars.yml         # Variables publiques
+│   │   └── vault.yml        # Chiffré avec vault-id dev
+│   ├── staging/
+│   │   ├── vars.yml
+│   │   └── vault.yml        # Chiffré avec vault-id staging
+│   └── prod/
+│       ├── vars.yml
+│       └── vault.yml        # Chiffré avec vault-id prod
+└── playbooks/
+    └── site.yml
+```
+
+**ansible.cfg :**
+
+```ini
+[defaults]
+inventory = ./inventory
+vault_identity_list = dev@.vault_pass_dev, staging@.vault_pass_staging, prod@.vault_pass_prod
+```
+
+**.gitignore :**
+
+```gitignore
+.vault_pass_*
+*_decrypted.yml
+```
+
+### Exemple complet de workflow multi-vault
+
+```bash
+# 1. Créer les fichiers de mots de passe
+openssl rand -base64 32 > .vault_pass_dev
+openssl rand -base64 32 > .vault_pass_staging
+openssl rand -base64 32 > .vault_pass_prod
+chmod 600 .vault_pass_*
+
+# 2. Créer les vaults par environnement
+ansible-vault create --vault-id dev@.vault_pass_dev group_vars/dev/vault.yml
+ansible-vault create --vault-id staging@.vault_pass_staging group_vars/staging/vault.yml
+ansible-vault create --vault-id prod@.vault_pass_prod group_vars/prod/vault.yml
+
+# 3. Éditer un vault spécifique
+ansible-vault edit --vault-id prod@.vault_pass_prod group_vars/prod/vault.yml
+
+# 4. Exécuter un playbook sur dev
+ansible-playbook site.yml -i inventory/dev.ini --vault-id dev@.vault_pass_dev
+
+# 5. Exécuter sur prod (avec confirmation manuelle)
+ansible-playbook site.yml -i inventory/prod.ini --vault-id prod@prompt
+```
+
+### Cas d'usage avancé : Rotation par environnement
+
+```bash
+#!/bin/bash
+# Script de rotation du mot de passe Vault pour production
+
+VAULT_ID="prod"
+OLD_PASS=".vault_pass_prod"
+NEW_PASS=".vault_pass_prod_new"
+
+# Générer un nouveau mot de passe
+openssl rand -base64 32 > $NEW_PASS
+chmod 600 $NEW_PASS
+
+# Rekey tous les fichiers prod
+find group_vars/prod -name "vault.yml" | while read file; do
+  echo "Rekeying $file..."
+  ansible-vault rekey \
+    --vault-id $VAULT_ID@$OLD_PASS \
+    --new-vault-id $VAULT_ID@$NEW_PASS \
+    "$file"
+done
+
+# Remplacer l'ancien mot de passe
+mv $NEW_PASS $OLD_PASS
+
+echo "Rotation completed for $VAULT_ID"
+```
+
+## Fichier de mot de passe
+
+### Fichier simple
+
+Le moyen le plus simple de gérer le mot de passe Vault.
+
+**Création :**
+
+```bash
+# Créer un fichier de mot de passe
+echo 'MyVaultPassword123!' > .vault_pass
+
+# Sécuriser les permissions
+chmod 600 .vault_pass
+
+# Ajouter au .gitignore
+echo '.vault_pass' >> .gitignore
+```
+
+**Configuration dans `ansible.cfg` :**
+
+```ini
+[defaults]
+vault_password_file = .vault_pass
+```
+
+**Utilisation :**
+
+```bash
+# Plus besoin de spécifier --vault-password-file
+ansible-playbook site.yml
+
+# Ansible lit automatiquement .vault_pass
+ansible-vault edit secrets.yml
+```
+
+### Génération sécurisée de mots de passe
+
+```bash
+# Méthode 1 : OpenSSL (recommandé)
+openssl rand -base64 32 > .vault_pass
+
+# Méthode 2 : /dev/urandom
+head -c 32 /dev/urandom | base64 > .vault_pass
+
+# Méthode 3 : pwgen
+pwgen -s 32 1 > .vault_pass
+
+# Méthode 4 : Python
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > .vault_pass
+```
+
+### Structure multi-environnement
+
+```bash
+# Créer un mot de passe par environnement
+openssl rand -base64 32 > .vault_pass_dev
+openssl rand -base64 32 > .vault_pass_staging
+openssl rand -base64 32 > .vault_pass_prod
+
+# Sécuriser
+chmod 600 .vault_pass_*
+
+# .gitignore
+cat >> .gitignore << 'EOF'
+.vault_pass*
+!.vault_pass.example
+EOF
+
+# Créer un fichier exemple pour la doc
+cat > .vault_pass.example << 'EOF'
+# Instructions:
+# 1. Copier ce fichier : cp .vault_pass.example .vault_pass_dev
+# 2. Générer un mot de passe : openssl rand -base64 32 > .vault_pass_dev
+# 3. Sécuriser : chmod 600 .vault_pass_dev
+EOF
+```
+
+### Variables d'environnement comme alternative
+
+```bash
+# Définir le mot de passe dans une variable d'environnement
+export ANSIBLE_VAULT_PASSWORD=MyVaultPassword123!
+
+# Ansible utilise automatiquement cette variable
+ansible-playbook site.yml
+
+# Ou créer un wrapper
+cat > vault-wrapper.sh << 'EOF'
+#!/bin/bash
+export ANSIBLE_VAULT_PASSWORD=$(security find-generic-password -w -s ansible-vault -a $(whoami))
+ansible-playbook "$@"
+EOF
+
+chmod +x vault-wrapper.sh
+./vault-wrapper.sh site.yml
+```
+
+## Script de mot de passe
+
+Un script exécutable qui retourne le mot de passe Vault (utile pour intégration avec password managers).
+
+### Script basique
+
+```bash
+#!/bin/bash
+# .vault_pass.sh
+
+# Retourner un mot de passe statique
+echo 'MyVaultPassword123!'
+```
+
+```bash
+# Rendre exécutable
+chmod +x .vault_pass.sh
+
+# Utiliser le script
+ansible-vault view --vault-password-file=.vault_pass.sh secrets.yml
+
+# Ou dans ansible.cfg
+# vault_password_file = .vault_pass.sh
+```
+
+### Script avec password manager système (macOS Keychain)
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe depuis macOS Keychain
+
+# Récupérer depuis Keychain
+security find-generic-password \
+  -w \
+  -s "ansible-vault" \
+  -a "$(whoami)"
+```
+
+**Configuration initiale :**
+
+```bash
+# Ajouter le mot de passe au Keychain
+security add-generic-password \
+  -s "ansible-vault" \
+  -a "$(whoami)" \
+  -w "MyVaultPassword123!" \
+  -U
+
+# Rendre le script exécutable
+chmod +x .vault_pass.sh
+
+# Tester
+./vault_pass.sh
+```
+
+### Script avec GNOME Keyring (Linux)
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe depuis GNOME Keyring
+
+# Installer secret-tool
+# sudo apt install libsecret-tools
+
+# Récupérer le secret
+secret-tool lookup service ansible-vault environment production
+```
+
+**Configuration initiale :**
+
+```bash
+# Stocker le secret dans GNOME Keyring
+secret-tool store \
+  --label="Ansible Vault Production" \
+  service ansible-vault \
+  environment production
+
+# Prompt pour le mot de passe
+# Entrez : MyVaultPassword123!
+
+# Tester le script
+chmod +x .vault_pass.sh
+./vault_pass.sh
+```
+
+### Script avec variables d'environnement
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Lit depuis une variable d'environnement
+
+if [ -z "$ANSIBLE_VAULT_PASSWORD" ]; then
+  echo "ERROR: ANSIBLE_VAULT_PASSWORD environment variable not set" >&2
+  exit 1
+fi
+
+echo "$ANSIBLE_VAULT_PASSWORD"
+```
+
+**Utilisation :**
+
+```bash
+# Définir la variable
+export ANSIBLE_VAULT_PASSWORD="MyVaultPassword123!"
+
+# Exécuter le playbook
+ansible-playbook site.yml
+```
+
+### Script avec fichier distant (S3, HTTP)
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe depuis AWS S3
+
+# Prérequis : aws-cli configuré
+aws s3 cp s3://my-secrets-bucket/ansible-vault-password.txt - 2>/dev/null
+```
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère depuis un serveur HTTP
+
+curl -s https://secrets.example.com/ansible-vault-password \
+  -H "Authorization: Bearer $SECRETS_TOKEN"
+```
+
+### Script avec support multi-vault
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Support multi-vault avec vault-id
+
+VAULT_ID="${1:-default}"
+
+case "$VAULT_ID" in
+  dev)
+    security find-generic-password -w -s "ansible-vault-dev" -a "$(whoami)"
+    ;;
+  staging)
+    security find-generic-password -w -s "ansible-vault-staging" -a "$(whoami)"
+    ;;
+  prod)
+    security find-generic-password -w -s "ansible-vault-prod" -a "$(whoami)"
+    ;;
+  *)
+    echo "ERROR: Unknown vault ID: $VAULT_ID" >&2
+    exit 1
+    ;;
+esac
+```
+
+**Utilisation :**
+
+```bash
+# Exécuter avec un vault-id spécifique
+ansible-playbook site.yml --vault-id dev@.vault_pass.sh
+ansible-playbook site.yml --vault-id prod@.vault_pass.sh
+```
+
+### Script avec audit logging
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Script avec logging d'accès
+
+LOG_FILE="/var/log/ansible/vault-access.log"
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+USER=$(whoami)
+VAULT_ID="${1:-default}"
+
+# Logger l'accès
+echo "$TIMESTAMP | $USER | $VAULT_ID | ${PPID}" >> "$LOG_FILE"
+
+# Récupérer le mot de passe (exemple avec Keychain)
+security find-generic-password -w -s "ansible-vault-$VAULT_ID" -a "$USER"
+```
+
+### Bonnes pratiques pour les scripts de mot de passe
+
+1. **Permissions strictes :**
+   ```bash
+   chmod 700 .vault_pass.sh
+   chown $(whoami):$(whoami) .vault_pass.sh
+   ```
+
+2. **Pas d'output sur stderr (sauf erreur) :**
+   ```bash
+   # Mauvais
+   echo "Fetching password..." >&2
+   security find-generic-password -w -s ansible-vault
+
+   # Bon
+   security find-generic-password -w -s ansible-vault 2>/dev/null
+   ```
+
+3. **Exit code approprié :**
+   ```bash
+   #!/bin/bash
+   PASSWORD=$(security find-generic-password -w -s ansible-vault 2>/dev/null)
+
+   if [ -z "$PASSWORD" ]; then
+     echo "ERROR: Password not found" >&2
+     exit 1
+   fi
+
+   echo "$PASSWORD"
+   exit 0
+   ```
+
+4. **Timeout pour les requêtes réseau :**
+   ```bash
+   curl -s --max-time 5 https://secrets.example.com/password || exit 1
+   ```
+
+## Intégration avec password managers
+
+### HashiCorp Vault
+
+HashiCorp Vault est un système de gestion de secrets centralisé, idéal pour les grandes infrastructures.
+
+#### Installation du plugin
+
+```bash
+# Installer le plugin Hashi Vault
+ansible-galaxy collection install community.hashi_vault
+```
+
+#### Configuration de base
+
+```yaml
+# playbook.yml
+---
+- name: Retrieve secrets from HashiCorp Vault
+  hosts: localhost
+  vars:
+    vault_url: "https://vault.example.com:8200"
+    vault_token: "{{ lookup('env', 'VAULT_TOKEN') }}"
+  tasks:
+    - name: Read database credentials from Vault
+      ansible.builtin.set_fact:
+        db_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/database:password', url=vault_url, token=vault_token) }}"
+        db_username: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/database:username', url=vault_url, token=vault_token) }}"
+
+    - name: Display secret (for testing only)
+      ansible.builtin.debug:
+        msg: "DB User: {{ db_username }}"
+```
+
+#### Utilisation avec AppRole
+
+```yaml
+# playbook.yml
+---
+- name: Authenticate with AppRole
+  hosts: localhost
+  vars:
+    vault_url: "https://vault.example.com:8200"
+    vault_role_id: "{{ lookup('env', 'VAULT_ROLE_ID') }}"
+    vault_secret_id: "{{ lookup('env', 'VAULT_SECRET_ID') }}"
+  tasks:
+    - name: Get database password
+      ansible.builtin.set_fact:
+        db_password: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/database:password',
+          url=vault_url,
+          auth_method='approle',
+          role_id=vault_role_id,
+          secret_id=vault_secret_id) }}"
+```
+
+#### Script de mot de passe Ansible Vault avec HashiCorp Vault
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe Ansible Vault depuis HashiCorp Vault
+
+VAULT_ADDR="${VAULT_ADDR:-https://vault.example.com:8200}"
+VAULT_TOKEN="${VAULT_TOKEN}"
+
+if [ -z "$VAULT_TOKEN" ]; then
+  echo "ERROR: VAULT_TOKEN not set" >&2
+  exit 1
+fi
+
+# Récupérer le secret depuis Vault
+vault kv get -field=password secret/ansible/vault-password 2>/dev/null
+```
+
+**Utilisation :**
+
+```bash
+# Exporter le token Vault
+export VAULT_TOKEN="hvs.CAESIG..."
+
+# Exécuter Ansible
+ansible-playbook site.yml --vault-password-file=.vault_pass.sh
+```
+
+### AWS Secrets Manager
+
+AWS Secrets Manager est le service de gestion de secrets natif d'AWS.
+
+#### Installation du plugin
+
+```bash
+# Installer boto3 et AWS collection
+pip3 install boto3 botocore
+ansible-galaxy collection install amazon.aws
+```
+
+#### Configuration de base
+
+```yaml
+# playbook.yml
+---
+- name: Retrieve secrets from AWS Secrets Manager
+  hosts: localhost
+  vars:
+    aws_region: "us-east-1"
+  tasks:
+    - name: Get database credentials from Secrets Manager
+      ansible.builtin.set_fact:
+        db_credentials: "{{ lookup('amazon.aws.aws_secret', 'prod/database/credentials', region=aws_region) | from_json }}"
+
+    - name: Use the credentials
+      ansible.builtin.debug:
+        msg: "DB Password: {{ db_credentials.password }}"
+```
+
+#### Script de mot de passe avec AWS Secrets Manager
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe depuis AWS Secrets Manager
+
+SECRET_NAME="ansible/vault-password"
+REGION="us-east-1"
+
+# Récupérer le secret
+aws secretsmanager get-secret-value \
+  --secret-id "$SECRET_NAME" \
+  --region "$REGION" \
+  --query 'SecretString' \
+  --output text 2>/dev/null
+```
+
+**Configuration AWS CLI :**
+
+```bash
+# Configurer AWS CLI
+aws configure set aws_access_key_id YOUR_ACCESS_KEY
+aws configure set aws_secret_access_key YOUR_SECRET_KEY
+aws configure set region us-east-1
+
+# Créer le secret
+aws secretsmanager create-secret \
+  --name ansible/vault-password \
+  --secret-string "MyVaultPassword123!" \
+  --region us-east-1
+
+# Tester le script
+chmod +x .vault_pass.sh
+./vault_pass.sh
+```
+
+#### Utilisation avec IAM Role (EC2/ECS)
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Utilise automatiquement le rôle IAM de l'instance
+
+SECRET_NAME="ansible/vault-password"
+REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+
+aws secretsmanager get-secret-value \
+  --secret-id "$SECRET_NAME" \
+  --region "$REGION" \
+  --query 'SecretString' \
+  --output text 2>/dev/null
+```
+
+### Azure Key Vault
+
+Azure Key Vault est le service de gestion de secrets de Microsoft Azure.
+
+#### Installation du plugin
+
+```bash
+# Installer Azure SDK
+pip3 install azure-keyvault-secrets azure-identity
+ansible-galaxy collection install azure.azcollection
+```
+
+#### Configuration de base
+
+```yaml
+# playbook.yml
+---
+- name: Retrieve secrets from Azure Key Vault
+  hosts: localhost
+  vars:
+    vault_name: "mykeyvault"
+    vault_uri: "https://{{ vault_name }}.vault.azure.net/"
+  tasks:
+    - name: Get database password from Key Vault
+      ansible.builtin.set_fact:
+        db_password: "{{ lookup('azure.azcollection.azure_keyvault_secret', 'database-password', vault_url=vault_uri) }}"
+```
+
+#### Script de mot de passe avec Azure Key Vault
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe depuis Azure Key Vault
+
+VAULT_NAME="mykeyvault"
+SECRET_NAME="ansible-vault-password"
+
+# Récupérer le secret (nécessite azure-cli)
+az keyvault secret show \
+  --vault-name "$VAULT_NAME" \
+  --name "$SECRET_NAME" \
+  --query 'value' \
+  --output tsv 2>/dev/null
+```
+
+**Configuration Azure CLI :**
+
+```bash
+# Se connecter à Azure
+az login
+
+# Créer un Key Vault
+az keyvault create \
+  --name mykeyvault \
+  --resource-group myresourcegroup \
+  --location eastus
+
+# Créer le secret
+az keyvault secret set \
+  --vault-name mykeyvault \
+  --name ansible-vault-password \
+  --value "MyVaultPassword123!"
+
+# Tester le script
+chmod +x .vault_pass.sh
+./vault_pass.sh
+```
+
+### Google Cloud Secret Manager
+
+Google Cloud Secret Manager est le service de gestion de secrets de GCP.
+
+#### Script de mot de passe avec GCP Secret Manager
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère le mot de passe depuis GCP Secret Manager
+
+PROJECT_ID="my-gcp-project"
+SECRET_NAME="ansible-vault-password"
+VERSION="latest"
+
+# Récupérer le secret
+gcloud secrets versions access "$VERSION" \
+  --secret="$SECRET_NAME" \
+  --project="$PROJECT_ID" 2>/dev/null
+```
+
+**Configuration gcloud :**
+
+```bash
+# Se connecter à GCP
+gcloud auth login
+
+# Définir le projet
+gcloud config set project my-gcp-project
+
+# Créer le secret
+echo -n "MyVaultPassword123!" | gcloud secrets create ansible-vault-password \
+  --data-file=- \
+  --replication-policy="automatic"
+
+# Tester le script
+chmod +x .vault_pass.sh
+./vault_pass.sh
+```
+
+### 1Password CLI
+
+1Password est un password manager populaire avec une CLI.
+
+```bash
+#!/bin/bash
+# .vault_pass.sh - Récupère depuis 1Password
+
+# Prérequis : 1Password CLI (op) installé et configuré
+op item get "Ansible Vault Password" --fields password 2>/dev/null
+```
+
+**Configuration :**
+
+```bash
+# Installer 1Password CLI
+# https://developer.1password.com/docs/cli/get-started/
+
+# Se connecter
+op signin
+
+# Créer un item
+op item create \
+  --category=password \
+  --title="Ansible Vault Password" \
+  password="MyVaultPassword123!"
+
+# Tester
+chmod +x .vault_pass.sh
+./vault_pass.sh
+```
+
+### Comparaison des solutions
+
+| Solution | Complexité | Cas d'usage | Coût |
+|----------|------------|-------------|------|
+| Fichier local | ⭐ | Petits projets, dev local | Gratuit |
+| macOS Keychain | ⭐⭐ | Développement macOS | Gratuit |
+| GNOME Keyring | ⭐⭐ | Développement Linux | Gratuit |
+| 1Password | ⭐⭐ | Équipes petites/moyennes | Payant |
+| HashiCorp Vault | ⭐⭐⭐⭐ | Grandes entreprises, multi-cloud | Open-source / Payant |
+| AWS Secrets Manager | ⭐⭐⭐ | Infrastructures AWS | Payant |
+| Azure Key Vault | ⭐⭐⭐ | Infrastructures Azure | Payant |
+| GCP Secret Manager | ⭐⭐⭐ | Infrastructures GCP | Payant |
+
+## Best practices de sécurité
+
+### `no_log` - Masquer les données sensibles
+
+Le paramètre `no_log: true` empêche Ansible d'afficher les valeurs sensibles dans les logs et la sortie.
+
+#### Utilisation de base
+
+```yaml
+---
+- name: Security best practices
+  hosts: all
+  tasks:
+    - name: Create database user (without no_log - UNSAFE)
+      ansible.builtin.command:
+        cmd: mysql -e "CREATE USER 'app'@'localhost' IDENTIFIED BY '{{ db_password }}';"
+      # ⚠️ Le mot de passe apparaît dans les logs !
+
+    - name: Create database user (with no_log - SAFE)
+      ansible.builtin.command:
+        cmd: mysql -e "CREATE USER 'app'@'localhost' IDENTIFIED BY '{{ db_password }}';"
+      no_log: true
+      # ✅ Le mot de passe est masqué
+```
+
+**Sortie sans `no_log` :**
+```
+TASK [Create database user (without no_log - UNSAFE)]
+changed: [server1] => {"cmd": "mysql -e \"CREATE USER 'app'@'localhost' IDENTIFIED BY 'SuperSecret123!';\"", "rc": 0}
+```
+
+**Sortie avec `no_log` :**
+```
+TASK [Create database user (with no_log - SAFE)]
+changed: [server1]
+```
+
+#### Cas d'usage avancés
+
+```yaml
+---
+- name: Advanced no_log usage
+  hosts: all
+  tasks:
+    # 1. Masquer les variables de loop
+    - name: Create multiple users
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        password: "{{ item.password | password_hash('sha512') }}"
+        state: present
+      loop:
+        - { name: "user1", password: "pass1" }
+        - { name: "user2", password: "pass2" }
+      no_log: true
+
+    # 2. Masquer les variables d'environnement
+    - name: Deploy application with API key
+      ansible.builtin.command:
+        cmd: /opt/app/deploy.sh
+      environment:
+        API_KEY: "{{ api_key }}"
+        DB_PASSWORD: "{{ db_password }}"
+      no_log: true
+
+    # 3. Masquer les templates avec secrets
+    - name: Deploy config file
+      ansible.builtin.template:
+        src: app.conf.j2
+        dest: /etc/app/app.conf
+        mode: '0600'
+      no_log: true
+
+    # 4. Masquer les register variables
+    - name: Fetch token from API
+      ansible.builtin.uri:
+        url: https://api.example.com/auth
+        method: POST
+        body_format: json
+        body:
+          username: "{{ api_user }}"
+          password: "{{ api_password }}"
+      register: auth_response
+      no_log: true
+
+    - name: Use token (still hidden)
+      ansible.builtin.uri:
+        url: https://api.example.com/data
+        headers:
+          Authorization: "Bearer {{ auth_response.json.token }}"
+      no_log: true
+```
+
+### `ansible_no_log` - Configuration globale
+
+Masquer les logs pour tout un playbook ou un rôle.
+
+#### Au niveau du playbook
+
+```yaml
+---
+- name: High-security playbook
+  hosts: all
+  vars:
+    ansible_no_log: true  # Active no_log pour toutes les tâches
+  tasks:
+    - name: Task 1 (logs hidden)
+      ansible.builtin.command: echo "secret"
+
+    - name: Task 2 (logs hidden)
+      ansible.builtin.command: echo "another secret"
+
+    - name: Task 3 (logs visible)
+      ansible.builtin.command: echo "public data"
+      no_log: false  # Override pour cette tâche
+```
+
+#### Au niveau du rôle
+
+```yaml
+# roles/secure_deploy/defaults/main.yml
+---
+ansible_no_log: true
+```
+
+#### Au niveau de l'inventaire
+
+```ini
+# inventory/production/group_vars/all.yml
+---
+ansible_no_log: true
+```
+
+### `.gitignore` - Protéger les secrets locaux
+
+Configuration essentielle pour éviter de committer des secrets.
+
+#### .gitignore complet pour Ansible
+
+```gitignore
+# .gitignore
+
+# Vault password files
+.vault_pass*
+!.vault_pass.example
+vault_password_file
+vault-password*
+
+# Decrypted files
+*_decrypted.yml
+*_plain.yml
+secrets_plain/
+
+# Private keys
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+!.ssh/config
+
+# Credentials files
+credentials.yml
+credentials/
+secrets.yml
+secrets/
+.secrets/
+
+# AWS credentials
+.aws/credentials
+aws_credentials.yml
+
+# GCP credentials
+gcp_credentials.json
+service_account.json
+
+# Azure credentials
+azure_credentials.yml
+
+# Environment files
+.env
+.env.local
+.env.production
+*.env
+
+# Logs
+*.log
+logs/
+ansible.log
+
+# Temporary files
+*.retry
+*.tmp
+.tmp/
+/tmp/
+
+# Cache
+.cache/
+__pycache__/
+*.pyc
+.ansible/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+```
+
+#### Vérification de sécurité
+
+```bash
+# Script de vérification pre-commit
+# .git/hooks/pre-commit
+
+#!/bin/bash
+
+# Couleurs
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo "Running security checks..."
+
+# 1. Vérifier les mots de passe en clair
+if git diff --cached --name-only | xargs grep -i "password\s*=" 2>/dev/null | grep -v "!vault"; then
+  echo -e "${RED}ERROR: Plaintext password detected!${NC}"
+  echo "Encrypt secrets with: ansible-vault encrypt_string"
+  exit 1
+fi
+
+# 2. Vérifier les fichiers de mot de passe Vault
+if git diff --cached --name-only | grep -E "\.vault_pass|vault.*password"; then
+  echo -e "${RED}ERROR: Vault password file in commit!${NC}"
+  exit 1
+fi
+
+# 3. Vérifier les clés privées
+if git diff --cached --name-only | grep -E "\.pem$|\.key$|id_rsa|id_ed25519"; then
+  echo -e "${RED}ERROR: Private key in commit!${NC}"
+  exit 1
+fi
+
+# 4. Vérifier les credentials AWS/GCP/Azure
+if git diff --cached --name-only | grep -E "credentials\.(json|yml)|service_account\.json"; then
+  echo -e "${RED}ERROR: Cloud credentials in commit!${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}Security checks passed!${NC}"
+exit 0
+```
+
+```bash
+# Rendre le hook exécutable
+chmod +x .git/hooks/pre-commit
+```
+
+### Secrets en CI/CD
+
+Gestion sécurisée des secrets dans les pipelines CI/CD.
+
+#### GitLab CI/CD
+
+```yaml
+# .gitlab-ci.yml
+---
+stages:
+  - deploy
+
+deploy_production:
+  stage: deploy
+  image: cytopia/ansible:latest
+  before_script:
+    # Créer le fichier de mot de passe Vault depuis une variable CI/CD
+    - echo "$VAULT_PASSWORD_PROD" > .vault_pass
+    - chmod 600 .vault_pass
+  script:
+    - ansible-playbook site.yml -i inventory/production --vault-password-file=.vault_pass
+  after_script:
+    # Supprimer le fichier de mot de passe
+    - rm -f .vault_pass
+  only:
+    - main
+  environment:
+    name: production
+```
+
+**Configuration GitLab :**
+1. Aller dans **Settings > CI/CD > Variables**
+2. Ajouter `VAULT_PASSWORD_PROD` (Type: Variable, Protected: Yes, Masked: Yes)
+
+#### GitHub Actions
+
+```yaml
+# .github/workflows/deploy.yml
+---
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+
+      - name: Create vault password file
+        run: |
+          echo "${{ secrets.VAULT_PASSWORD_PROD }}" > .vault_pass
+          chmod 600 .vault_pass
+
+      - name: Deploy with Ansible
+        run: |
+          ansible-playbook site.yml \
+            -i inventory/production \
+            --vault-password-file=.vault_pass
+
+      - name: Clean up
+        if: always()
+        run: |
+          rm -f .vault_pass
+```
+
+**Configuration GitHub :**
+1. Aller dans **Settings > Secrets and variables > Actions**
+2. Ajouter `VAULT_PASSWORD_PROD`
+
+#### Jenkins Pipeline
+
+```groovy
+// Jenkinsfile
+pipeline {
+    agent any
+
+    environment {
+        VAULT_PASSWORD = credentials('ansible-vault-password-prod')
+    }
+
+    stages {
+        stage('Deploy') {
+            steps {
+                script {
+                    // Créer le fichier de mot de passe
+                    writeFile file: '.vault_pass', text: env.VAULT_PASSWORD
+                    sh 'chmod 600 .vault_pass'
+
+                    // Déployer
+                    sh '''
+                        ansible-playbook site.yml \
+                          -i inventory/production \
+                          --vault-password-file=.vault_pass
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Nettoyer
+            sh 'rm -f .vault_pass'
+        }
+    }
+}
+```
+
+**Configuration Jenkins :**
+1. **Manage Jenkins > Manage Credentials**
+2. Ajouter un **Secret text** nommé `ansible-vault-password-prod`
+
+#### CircleCI
+
+```yaml
+# .circleci/config.yml
+version: 2.1
+
+jobs:
+  deploy:
+    docker:
+      - image: cytopia/ansible:latest
+    steps:
+      - checkout
+      - run:
+          name: Create vault password file
+          command: |
+            echo "$VAULT_PASSWORD_PROD" > .vault_pass
+            chmod 600 .vault_pass
+      - run:
+          name: Deploy with Ansible
+          command: |
+            ansible-playbook site.yml \
+              -i inventory/production \
+              --vault-password-file=.vault_pass
+      - run:
+          name: Clean up
+          command: rm -f .vault_pass
+          when: always
+
+workflows:
+  deploy_production:
+    jobs:
+      - deploy:
+          filters:
+            branches:
+              only: main
+          context: production
+```
+
+**Configuration CircleCI :**
+1. **Project Settings > Environment Variables**
+2. Ajouter `VAULT_PASSWORD_PROD`
+
+#### Best practices CI/CD
+
+```yaml
+# Playbook avec vérifications de sécurité
+---
+- name: Pre-deployment security checks
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Verify vault password file exists
+      ansible.builtin.stat:
+        path: .vault_pass
+      register: vault_file
+      failed_when: not vault_file.stat.exists
+
+    - name: Verify vault password file permissions
+      ansible.builtin.assert:
+        that:
+          - vault_file.stat.mode == "0600"
+        fail_msg: "Vault password file has insecure permissions!"
+
+    - name: Verify no plaintext secrets in environment
+      ansible.builtin.shell: |
+        set -e
+        if env | grep -iE "(password|secret|token|key)" | grep -v "VAULT"; then
+          echo "ERROR: Plaintext secrets in environment!"
+          exit 1
+        fi
+      changed_when: false
+
+- name: Deploy application
+  hosts: production
+  roles:
+    - deploy
+```
+
+## Rotation des secrets
+
+La rotation régulière des secrets est une best practice de sécurité essentielle.
+
+### Rotation du mot de passe Vault
+
+#### Script de rotation manuel
+
+```bash
+#!/bin/bash
+# rotate_vault_password.sh
+
+set -euo pipefail
+
+# Couleurs
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Configuration
+OLD_PASS_FILE=".vault_pass"
+NEW_PASS_FILE=".vault_pass_new"
+BACKUP_DIR="vault_backups/$(date +%Y%m%d_%H%M%S)"
+
+echo -e "${YELLOW}=== Ansible Vault Password Rotation ===${NC}\n"
+
+# 1. Créer le répertoire de backup
+mkdir -p "$BACKUP_DIR"
+echo -e "${GREEN}✓${NC} Backup directory created: $BACKUP_DIR"
+
+# 2. Générer un nouveau mot de passe
+openssl rand -base64 32 > "$NEW_PASS_FILE"
+chmod 600 "$NEW_PASS_FILE"
+echo -e "${GREEN}✓${NC} New vault password generated"
+
+# 3. Trouver tous les fichiers Vault
+echo -e "\n${YELLOW}Finding vault files...${NC}"
+VAULT_FILES=$(find . -type f \( -name "vault.yml" -o -name "*vault*.yml" \) \
+  ! -path "*/\.*" ! -path "*/node_modules/*")
+
+if [ -z "$VAULT_FILES" ]; then
+  echo -e "${RED}✗${NC} No vault files found"
+  exit 1
+fi
+
+echo "$VAULT_FILES" | while read file; do
+  echo "  - $file"
+done
+
+# 4. Backup des fichiers originaux
+echo -e "\n${YELLOW}Backing up vault files...${NC}"
+echo "$VAULT_FILES" | while read file; do
+  cp "$file" "$BACKUP_DIR/"
+  echo -e "${GREEN}✓${NC} Backed up: $file"
+done
+
+# 5. Rekey tous les fichiers
+echo -e "\n${YELLOW}Rekeying vault files...${NC}"
+REKEY_SUCCESS=true
+
+echo "$VAULT_FILES" | while read file; do
+  if ansible-vault rekey \
+    --vault-password-file="$OLD_PASS_FILE" \
+    --new-vault-password-file="$NEW_PASS_FILE" \
+    "$file" 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} Rekeyed: $file"
+  else
+    echo -e "${RED}✗${NC} Failed: $file"
+    REKEY_SUCCESS=false
+  fi
+done
+
+# 6. Vérifier que tous les fichiers sont lisibles avec le nouveau mot de passe
+echo -e "\n${YELLOW}Verifying rekeyed files...${NC}"
+VERIFY_SUCCESS=true
+
+echo "$VAULT_FILES" | while read file; do
+  if ansible-vault view \
+    --vault-password-file="$NEW_PASS_FILE" \
+    "$file" &>/dev/null; then
+    echo -e "${GREEN}✓${NC} Verified: $file"
+  else
+    echo -e "${RED}✗${NC} Verification failed: $file"
+    VERIFY_SUCCESS=false
+  fi
+done
+
+# 7. Remplacer l'ancien mot de passe
+if [ "$VERIFY_SUCCESS" = true ]; then
+  cp "$OLD_PASS_FILE" "$BACKUP_DIR/.vault_pass_old"
+  mv "$NEW_PASS_FILE" "$OLD_PASS_FILE"
+  echo -e "\n${GREEN}✓ Rotation completed successfully!${NC}"
+  echo -e "${YELLOW}Backup location: $BACKUP_DIR${NC}"
+else
+  echo -e "\n${RED}✗ Rotation failed! Restoring from backup...${NC}"
+  cp "$BACKUP_DIR"/* .
+  rm -f "$NEW_PASS_FILE"
+  exit 1
+fi
+```
+
+```bash
+# Utilisation
+chmod +x rotate_vault_password.sh
+./rotate_vault_password.sh
+```
+
+#### Script de rotation avec multi-vault
+
+```bash
+#!/bin/bash
+# rotate_vault_multi.sh - Rotation avec support multi-vault
+
+set -euo pipefail
+
+VAULT_ID="${1:-}"
+
+if [ -z "$VAULT_ID" ]; then
+  echo "Usage: $0 <vault-id>"
+  echo "Example: $0 prod"
+  exit 1
+fi
+
+OLD_PASS=".vault_pass_${VAULT_ID}"
+NEW_PASS=".vault_pass_${VAULT_ID}_new"
+BACKUP_DIR="vault_backups/${VAULT_ID}_$(date +%Y%m%d_%H%M%S)"
+
+echo "Rotating vault: $VAULT_ID"
+
+# Générer le nouveau mot de passe
+openssl rand -base64 32 > "$NEW_PASS"
+chmod 600 "$NEW_PASS"
+
+# Créer backup
+mkdir -p "$BACKUP_DIR"
+
+# Trouver les fichiers avec ce vault-id
+VAULT_FILES=$(grep -rl "AES256;${VAULT_ID}" . \
+  --include="*.yml" \
+  --exclude-dir=".git" \
+  --exclude-dir="node_modules" 2>/dev/null || true)
+
+# Rekey
+echo "$VAULT_FILES" | while read file; do
+  [ -z "$file" ] && continue
+  cp "$file" "$BACKUP_DIR/"
+  ansible-vault rekey \
+    --vault-id "${VAULT_ID}@${OLD_PASS}" \
+    --new-vault-id "${VAULT_ID}@${NEW_PASS}" \
+    "$file"
+  echo "Rekeyed: $file"
+done
+
+# Remplacer
+cp "$OLD_PASS" "$BACKUP_DIR/"
+mv "$NEW_PASS" "$OLD_PASS"
+
+echo "Rotation completed for vault-id: $VAULT_ID"
+echo "Backup: $BACKUP_DIR"
+```
+
+```bash
+# Utilisation
+./rotate_vault_multi.sh prod
+./rotate_vault_multi.sh staging
+./rotate_vault_multi.sh dev
+```
+
+### Rotation des secrets applicatifs
+
+#### Playbook de rotation de mot de passe database
+
+```yaml
+# rotate_db_password.yml
+---
+- name: Rotate database password
+  hosts: localhost
+  gather_facts: false
+  vars:
+    new_db_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  tasks:
+    - name: Display rotation info
+      ansible.builtin.debug:
+        msg: "Rotating database password for production"
+
+    - name: Update password in database
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ new_db_password }}"
+        host: "{{ db_host }}"
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        state: present
+
+    - name: Encrypt new password with Vault
+      ansible.builtin.command:
+        cmd: >
+          ansible-vault encrypt_string
+          --vault-password-file=.vault_pass
+          '{{ new_db_password }}'
+          --name 'db_password'
+      register: encrypted_password
+      delegate_to: localhost
+
+    - name: Display encrypted password
+      ansible.builtin.debug:
+        msg: |
+          Update group_vars/production/vault.yml with:
+          {{ encrypted_password.stdout }}
+
+    - name: Save to vault file (manual step)
+      ansible.builtin.pause:
+        prompt: |
+          Please update group_vars/production/vault.yml manually:
+
+          {{ encrypted_password.stdout }}
+
+          Press Enter when done...
+```
+
+#### Script de rotation automatisé
+
+```bash
+#!/bin/bash
+# rotate_all_secrets.sh - Rotation automatisée complète
+
+set -euo pipefail
+
+ENVIRONMENT="${1:-production}"
+VAULT_FILE="group_vars/${ENVIRONMENT}/vault.yml"
+VAULT_PASS=".vault_pass_${ENVIRONMENT}"
+
+echo "=== Rotating secrets for environment: $ENVIRONMENT ==="
+
+# 1. Générer les nouveaux secrets
+NEW_DB_PASSWORD=$(openssl rand -base64 32)
+NEW_API_KEY=$(openssl rand -hex 32)
+NEW_JWT_SECRET=$(openssl rand -base64 64)
+
+# 2. Backup du vault actuel
+BACKUP_DIR="vault_backups/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$BACKUP_DIR"
+cp "$VAULT_FILE" "$BACKUP_DIR/"
+
+# 3. Déchiffrer le vault
+ansible-vault decrypt --vault-password-file="$VAULT_PASS" "$VAULT_FILE"
+
+# 4. Mettre à jour les secrets avec yq
+yq eval ".vault_db_password = \"$NEW_DB_PASSWORD\"" -i "$VAULT_FILE"
+yq eval ".vault_api_key = \"$NEW_API_KEY\"" -i "$VAULT_FILE"
+yq eval ".vault_jwt_secret = \"$NEW_JWT_SECRET\"" -i "$VAULT_FILE"
+
+# 5. Re-chiffrer le vault
+ansible-vault encrypt --vault-password-file="$VAULT_PASS" "$VAULT_FILE"
+
+# 6. Appliquer les nouveaux secrets sur les serveurs
+ansible-playbook apply_secrets.yml \
+  -i "inventory/${ENVIRONMENT}.ini" \
+  --vault-password-file="$VAULT_PASS" \
+  -e "db_password=$NEW_DB_PASSWORD" \
+  -e "api_key=$NEW_API_KEY" \
+  -e "jwt_secret=$NEW_JWT_SECRET"
+
+echo "✓ Secrets rotated successfully"
+echo "✓ Backup saved to: $BACKUP_DIR"
+```
+
+### Rotation planifiée (cron)
+
+```bash
+# /etc/cron.d/ansible-vault-rotation
+
+# Rotation mensuelle du mot de passe Vault (1er du mois à 2h)
+0 2 1 * * ansible /opt/ansible/scripts/rotate_vault_password.sh >> /var/log/ansible/vault-rotation.log 2>&1
+
+# Rotation hebdomadaire des secrets applicatifs (dimanche à 3h)
+0 3 * * 0 ansible /opt/ansible/scripts/rotate_all_secrets.sh production >> /var/log/ansible/secrets-rotation.log 2>&1
+```
+
+### Politique de rotation recommandée
+
+| Type de secret | Fréquence | Méthode |
+|----------------|-----------|---------|
+| Mot de passe Vault | 90 jours | `ansible-vault rekey` |
+| Mots de passe database | 30 jours | Playbook automatisé |
+| Clés API | 30-90 jours | Script + password manager |
+| Certificats SSL | Avant expiration | Playbook Let's Encrypt |
+| Tokens JWT | 7-30 jours | Script automatisé |
+| Clés SSH | 180 jours | Playbook de déploiement |
+
+### Audit de rotation
+
+```yaml
+# audit_secret_age.yml
+---
+- name: Audit secret rotation age
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Find all vault files
+      ansible.builtin.find:
+        paths: .
+        patterns: "*vault*.yml"
+        recurse: true
+      register: vault_files
+
+    - name: Check last modification time
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop: "{{ vault_files.files }}"
+      register: file_stats
+
+    - name: Display secrets that need rotation
+      ansible.builtin.debug:
+        msg: |
+          File: {{ item.item.path }}
+          Last modified: {{ item.stat.mtime | int | ansible.builtin.to_datetime }}
+          Age: {{ ((ansible_date_time.epoch | int - item.stat.mtime) / 86400) | int }} days
+      loop: "{{ file_stats.results }}"
+      when: (ansible_date_time.epoch | int - item.stat.mtime) > 7776000  # 90 jours
+```
+
+```bash
+# Exécuter l'audit
+ansible-playbook audit_secret_age.yml
+```
+
+## Conclusion
+
+Ansible Vault offre une solution robuste pour gérer les secrets de manière sécurisée. En combinant :
+- Chiffrement AES-256
+- Intégration avec les password managers
+- Best practices de sécurité (`no_log`, `.gitignore`)
+- Rotation automatisée des secrets
+- Pipelines CI/CD sécurisés
+
+Vous pouvez construire une infrastructure hautement sécurisée et conforme aux standards de l'industrie.
+
+**Points clés à retenir :**
+- ✅ Toujours chiffrer les secrets avec `ansible-vault`
+- ✅ Utiliser `no_log: true` pour les tâches sensibles
+- ✅ Ne jamais committer les fichiers de mot de passe Vault
+- ✅ Implémenter une rotation régulière des secrets
+- ✅ Utiliser des password managers centralisés en production
+- ✅ Auditer régulièrement l'âge des secrets

@@ -1,0 +1,1110 @@
+# Variables & Facts
+
+Documentation complète sur les variables, facts et templating Jinja2 dans Ansible.
+
+## Types de variables
+
+### 1. Variables classiques (`vars`)
+
+Définies directement dans le playbook ou dans les rôles.
+
+```yaml
+---
+- name: Exemple avec vars
+  hosts: webservers
+  vars:
+    http_port: 80
+    max_clients: 200
+    app_name: "MyApp"
+  tasks:
+    - name: Afficher les variables
+      debug:
+        msg: "{{ app_name }} écoute sur le port {{ http_port }}"
+```
+
+### 2. Fichiers de variables (`vars_files`)
+
+Externaliser les variables dans des fichiers séparés.
+
+```yaml
+---
+- name: Utilisation de vars_files
+  hosts: all
+  vars_files:
+    - vars/common.yml
+    - vars/{{ ansible_os_family }}.yml
+  tasks:
+    - name: Configuration
+      debug:
+        var: app_config
+```
+
+**Fichier `vars/common.yml` :**
+```yaml
+app_name: "MyApplication"
+app_version: "1.2.3"
+app_user: "appuser"
+app_group: "appgroup"
+```
+
+### 3. Variables interactives (`vars_prompt`)
+
+Demander des valeurs à l'utilisateur lors de l'exécution.
+
+```yaml
+---
+- name: Déploiement avec prompt
+  hosts: production
+  vars_prompt:
+    - name: db_password
+      prompt: "Entrez le mot de passe de la base de données"
+      private: true
+      confirm: true
+
+    - name: deploy_version
+      prompt: "Quelle version déployer ?"
+      default: "latest"
+      private: false
+  tasks:
+    - name: Déployer l'application
+      debug:
+        msg: "Déploiement version {{ deploy_version }}"
+```
+
+### 4. Variables en ligne de commande (`extra_vars`)
+
+Variables passées lors de l'exécution avec `-e` ou `--extra-vars`.
+
+```bash
+ansible-playbook deploy.yml -e "env=production version=2.0.0"
+ansible-playbook deploy.yml -e '{"env":"production","version":"2.0.0"}'
+ansible-playbook deploy.yml -e "@vars/production.yml"
+```
+
+**Priorité maximale** : les `extra_vars` écrasent toutes les autres variables.
+
+### 5. Enregistrement de résultats (`register`)
+
+Capturer la sortie d'une tâche dans une variable.
+
+```yaml
+- name: Vérifier si un fichier existe
+  stat:
+    path: /etc/myapp/config.yml
+  register: config_file
+
+- name: Afficher le résultat
+  debug:
+    msg: "Le fichier existe : {{ config_file.stat.exists }}"
+
+- name: Action conditionnelle
+  command: /usr/bin/initialize_config
+  when: not config_file.stat.exists
+```
+
+**Structure d'une variable `register` :**
+```yaml
+config_file:
+  changed: false
+  failed: false
+  stat:
+    exists: true
+    size: 1024
+    mode: "0644"
+    # ... autres attributs
+```
+
+### 6. Définir des variables dynamiquement (`set_fact`)
+
+Créer ou modifier des variables pendant l'exécution.
+
+```yaml
+- name: Calculer des valeurs
+  set_fact:
+    total_memory_mb: "{{ ansible_memtotal_mb }}"
+    half_memory_mb: "{{ ansible_memtotal_mb | int // 2 }}"
+    app_memory_mb: "{{ (ansible_memtotal_mb | int * 0.7) | int }}"
+
+- name: Construire une configuration complexe
+  set_fact:
+    database_config:
+      host: "{{ db_host }}"
+      port: "{{ db_port | default(5432) }}"
+      name: "{{ app_name }}_{{ env }}"
+      pool_size: "{{ db_pool_size | default(20) }}"
+
+- name: Variable cacheable
+  set_fact:
+    expensive_calculation: "{{ complex_computation }}"
+    cacheable: true
+```
+
+## Précédence des variables
+
+Ansible applique un ordre de priorité strict pour résoudre les conflits entre variables. **Plus le numéro est élevé, plus la priorité est forte.**
+
+### Les 22 niveaux de précédence
+
+**Du moins prioritaire au plus prioritaire :**
+
+1. **command line values** (par exemple : `ansible-playbook -u user`)
+2. **role defaults** (`roles/myrole/defaults/main.yml`)
+3. **inventory file or script group vars** (groupe dans l'inventaire)
+4. **inventory group_vars/all** (`group_vars/all.yml`)
+5. **playbook group_vars/all** (`group_vars/all.yml` dans le playbook)
+6. **inventory group_vars/*** (`group_vars/webservers.yml`)
+7. **playbook group_vars/*** (`group_vars/webservers.yml` dans le playbook)
+8. **inventory file or script host vars** (host dans l'inventaire)
+9. **inventory host_vars/*** (`host_vars/server1.yml`)
+10. **playbook host_vars/*** (`host_vars/server1.yml` dans le playbook)
+11. **host facts / cached set_facts** (facts découverts ou mis en cache)
+12. **play vars** (section `vars:` dans un play)
+13. **play vars_prompt** (section `vars_prompt:`)
+14. **play vars_files** (section `vars_files:`)
+15. **role vars** (`roles/myrole/vars/main.yml`)
+16. **block vars** (section `vars:` dans un bloc)
+17. **task vars** (section `vars:` dans une tâche)
+18. **include_vars** (module `include_vars`)
+19. **set_fact / register vars** (non-cacheable)
+20. **role params** (variables passées lors de l'inclusion du rôle)
+21. **include params** (variables passées lors d'un `include_tasks`)
+22. **extra vars** (`-e` / `--extra-vars`) **← PRIORITÉ MAXIMALE**
+
+### Exemples de précédence
+
+```yaml
+# roles/webserver/defaults/main.yml (Niveau 2 - faible priorité)
+http_port: 80
+
+# group_vars/webservers.yml (Niveau 6 - priorité moyenne)
+http_port: 8080
+
+# playbook.yml
+- name: Configuration webserver
+  hosts: webservers
+  vars:  # Niveau 12 - priorité haute
+    http_port: 9000
+  roles:
+    - role: webserver
+      http_port: 9090  # Niveau 20 - très haute priorité
+```
+
+**Résultat :** `http_port = 9090` (role params l'emporte)
+
+**Avec extra_vars :**
+```bash
+ansible-playbook playbook.yml -e "http_port=7000"
+```
+**Résultat :** `http_port = 7000` (extra_vars écrase tout)
+
+### Bonnes pratiques de précédence
+
+1. **Defaults** (`defaults/main.yml`) : valeurs par défaut modifiables
+2. **Vars** (`vars/main.yml`) : valeurs fixes du rôle
+3. **Group_vars** : configuration par groupe de serveurs
+4. **Host_vars** : configuration spécifique à un hôte
+5. **Extra_vars** : surcharge ponctuelle en ligne de commande
+
+```yaml
+# roles/myapp/defaults/main.yml - Valeurs par défaut
+myapp_port: 8080
+myapp_workers: 4
+
+# roles/myapp/vars/main.yml - Valeurs fixes
+myapp_config_dir: "/etc/myapp"
+myapp_log_dir: "/var/log/myapp"
+
+# group_vars/production.yml - Config production
+myapp_workers: 16
+myapp_log_level: "warning"
+
+# host_vars/prod-server-01.yml - Config spécifique
+myapp_port: 9090
+```
+
+## Facts Ansible
+
+### 1. Facts système (`ansible_facts`)
+
+Ansible collecte automatiquement des informations sur les hôtes cibles.
+
+```yaml
+- name: Afficher tous les facts
+  debug:
+    var: ansible_facts
+
+- name: Utiliser des facts spécifiques
+  debug:
+    msg: |
+      OS : {{ ansible_distribution }} {{ ansible_distribution_version }}
+      Architecture : {{ ansible_architecture }}
+      RAM totale : {{ ansible_memtotal_mb }} MB
+      Disque principal : {{ ansible_mounts[0].size_total / 1024 / 1024 / 1024 }} GB
+      IP principale : {{ ansible_default_ipv4.address }}
+      Hostname : {{ ansible_hostname }}
+      FQDN : {{ ansible_fqdn }}
+```
+
+**Facts réseau :**
+```yaml
+- name: Informations réseau
+  debug:
+    msg: |
+      Interfaces : {{ ansible_interfaces }}
+      IP eth0 : {{ ansible_eth0.ipv4.address }}
+      MAC eth0 : {{ ansible_eth0.macaddress }}
+      Gateway : {{ ansible_default_ipv4.gateway }}
+      DNS : {{ ansible_dns.nameservers }}
+```
+
+**Désactiver la collecte de facts :**
+```yaml
+- name: Playbook sans facts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Tâche rapide
+      ping:
+```
+
+### 2. Custom facts (fichiers locaux)
+
+Créer des facts personnalisés sur les hôtes cibles dans `/etc/ansible/facts.d/`.
+
+**Fichier `/etc/ansible/facts.d/myapp.fact` (format INI) :**
+```ini
+[general]
+version=2.1.0
+environment=production
+
+[database]
+host=db.example.com
+port=5432
+name=myapp_prod
+```
+
+**Fichier `/etc/ansible/facts.d/monitoring.fact` (format JSON) :**
+```json
+{
+  "enabled": true,
+  "port": 9090,
+  "endpoints": ["metrics", "health", "ready"]
+}
+```
+
+**Fichier exécutable `/etc/ansible/facts.d/system_info.fact` :**
+```bash
+#!/bin/bash
+cat <<EOF
+{
+  "last_deployment": "$(stat -c %y /opt/myapp/current)",
+  "active_connections": "$(netstat -an | grep ESTABLISHED | wc -l)",
+  "disk_usage_percent": "$(df -h / | tail -1 | awk '{print $5}')"
+}
+EOF
+```
+
+**Utilisation dans un playbook :**
+```yaml
+- name: Utiliser custom facts
+  hosts: all
+  tasks:
+    - name: Recharger les facts
+      setup:
+        filter: ansible_local
+
+    - name: Afficher custom facts
+      debug:
+        msg: |
+          Version app : {{ ansible_local.myapp.general.version }}
+          Env : {{ ansible_local.myapp.general.environment }}
+          DB host : {{ ansible_local.myapp.database.host }}
+          Monitoring : {{ ansible_local.monitoring.enabled }}
+          Dernière deploy : {{ ansible_local.system_info.last_deployment }}
+```
+
+### 3. Fact caching
+
+Mettre en cache les facts pour accélérer les exécutions suivantes.
+
+**Configuration dans `ansible.cfg` :**
+
+**Cache JSON (simple) :**
+```ini
+[defaults]
+gathering = smart
+fact_caching = jsonfile
+fact_caching_connection = /tmp/ansible_facts_cache
+fact_caching_timeout = 86400  # 24 heures
+```
+
+**Cache Redis (production) :**
+```ini
+[defaults]
+gathering = smart
+fact_caching = redis
+fact_caching_connection = localhost:6379:0:password
+fact_caching_timeout = 3600
+fact_caching_prefix = ansible_facts_
+```
+
+**Modes de collecte :**
+- `gathering = implicit` : collecte toujours (par défaut)
+- `gathering = explicit` : jamais de collecte automatique
+- `gathering = smart` : utilise le cache si valide
+
+**Forcer la collecte :**
+```yaml
+- name: Forcer la collecte de facts
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Rafraîchir les facts
+      setup:
+```
+
+**Cache Redis avec set_fact :**
+```yaml
+- name: Calculer et cacher
+  set_fact:
+    expensive_result: "{{ complex_calculation }}"
+    cacheable: true  # Sera mis en cache Redis
+```
+
+## Templating Jinja2
+
+### 1. Filtres essentiels
+
+**default - Valeur par défaut :**
+```yaml
+- name: Utiliser default
+  debug:
+    msg: "Port : {{ custom_port | default(8080) }}"
+
+- name: Default avec variable vide
+  debug:
+    msg: "Nom : {{ app_name | default('MyApp', true) }}"  # true = défaut si vide
+```
+
+**map - Transformer une liste :**
+```yaml
+- name: Extraire des attributs
+  set_fact:
+    user_names: "{{ users | map(attribute='name') | list }}"
+    user_ids: "{{ users | map(attribute='id') | list }}"
+
+- name: Appliquer un filtre
+  set_fact:
+    ports_string: "{{ ports | map('string') | list }}"
+```
+
+**select/reject - Filtrer une liste :**
+```yaml
+- name: Filtrer avec select
+  set_fact:
+    # Utilisateurs actifs
+    active_users: "{{ users | selectattr('active', 'equalto', true) | list }}"
+
+    # Serveurs avec plus de 8GB RAM
+    big_servers: "{{ hostvars | dict2items | selectattr('value.ansible_memtotal_mb', '>', 8192) | list }}"
+
+    # Fichiers qui existent
+    existing_files: "{{ file_checks | selectattr('stat.exists') | list }}"
+
+- name: Filtrer avec reject
+  set_fact:
+    # Exclure les utilisateurs admin
+    regular_users: "{{ users | rejectattr('role', 'equalto', 'admin') | list }}"
+```
+
+**join - Concaténer :**
+```yaml
+- name: Joindre des éléments
+  set_fact:
+    hosts_line: "{{ ip_addresses | join(',') }}"
+    path: "{{ path_parts | join('/') }}"
+```
+
+**regex_replace - Remplacer avec regex :**
+```yaml
+- name: Manipulations regex
+  set_fact:
+    # Remplacer des caractères
+    safe_name: "{{ app_name | regex_replace('[^a-zA-Z0-9]', '_') }}"
+
+    # Extraire une version
+    major_version: "{{ full_version | regex_replace('^([0-9]+)\\..*', '\\1') }}"
+
+    # Nettoyer une URL
+    clean_url: "{{ url | regex_replace('^https?://', '') | regex_replace('/$', '') }}"
+```
+
+**Filtres de transformation :**
+```yaml
+- name: Autres filtres utiles
+  set_fact:
+    # Conversion de type
+    port_int: "{{ port_string | int }}"
+    size_float: "{{ size | float }}"
+    is_enabled: "{{ enabled | bool }}"
+
+    # Manipulation de chaînes
+    upper_name: "{{ name | upper }}"
+    lower_name: "{{ name | lower }}"
+    title_name: "{{ name | title }}"
+
+    # Listes
+    unique_items: "{{ items | unique }}"
+    sorted_items: "{{ items | sort }}"
+    first_item: "{{ items | first }}"
+    last_item: "{{ items | last }}"
+    random_item: "{{ items | random }}"
+
+    # Dictionnaires
+    keys_list: "{{ my_dict | dict2items }}"
+    combined: "{{ dict1 | combine(dict2) }}"
+```
+
+### 2. Tests Jinja2
+
+**defined/undefined - Vérifier l'existence :**
+```yaml
+- name: Vérifier si défini
+  debug:
+    msg: "Variable définie"
+  when: my_var is defined
+
+- name: Vérifier si non défini
+  debug:
+    msg: "Variable manquante"
+  when: my_var is undefined
+
+- name: Utiliser avec default
+  set_fact:
+    value: "{{ custom_value if custom_value is defined else 'default' }}"
+```
+
+**match/search - Tests regex :**
+```yaml
+- name: Tests regex
+  debug:
+    msg: "Match trouvé"
+  when:
+    # match : début de chaîne
+    - hostname is match('^web-.*')
+
+    # search : n'importe où dans la chaîne
+    - log_line is search('ERROR|CRITICAL')
+
+    # regex : alias de search
+    - email is regex('.*@example\.com$')
+```
+
+**Tests de type et valeur :**
+```yaml
+- name: Tests divers
+  debug:
+    msg: "Tests OK"
+  when:
+    # Tests de type
+    - my_var is string
+    - my_list is sequence
+    - my_dict is mapping
+    - my_number is number
+
+    # Tests de valeur
+    - result is succeeded
+    - result is failed
+    - result is changed
+    - result is skipped
+
+    # Tests booléens
+    - config is truthy
+    - config is falsy
+
+    # Tests de contenu
+    - my_list is contains('item')
+    - my_string is contains('substring')
+```
+
+### 3. Lookups
+
+Charger des données depuis des sources externes.
+
+**file - Lire un fichier :**
+```yaml
+- name: Lire du contenu
+  debug:
+    msg: "{{ lookup('file', '/etc/hostname') }}"
+
+- name: Charger une clé SSH
+  authorized_key:
+    user: deploy
+    key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+```
+
+**env - Variables d'environnement :**
+```yaml
+- name: Utiliser des variables d'environnement
+  debug:
+    msg: "User : {{ lookup('env', 'USER') }}"
+
+- name: Avec valeur par défaut
+  set_fact:
+    api_key: "{{ lookup('env', 'API_KEY', default='dev-key') }}"
+```
+
+**template - Évaluer un template :**
+```yaml
+- name: Template inline
+  debug:
+    msg: "{{ lookup('template', 'templates/message.j2') }}"
+```
+
+**pipe - Exécuter une commande :**
+```yaml
+- name: Résultat de commande
+  debug:
+    msg: "Date : {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+
+- name: Hash d'un mot de passe
+  debug:
+    msg: "{{ lookup('pipe', 'openssl passwd -6 mypassword') }}"
+```
+
+**url - Récupérer du contenu HTTP :**
+```yaml
+- name: API call
+  set_fact:
+    external_ip: "{{ lookup('url', 'https://api.ipify.org?format=json') | from_json | json_query('ip') }}"
+```
+
+**dict/list - Parcourir des structures :**
+```yaml
+- name: Parcourir un dictionnaire
+  debug:
+    msg: "{{ item.key }} = {{ item.value }}"
+  loop: "{{ lookup('dict', my_dict) }}"
+
+- name: Liste de fichiers
+  debug:
+    msg: "Fichier : {{ item }}"
+  loop: "{{ lookup('fileglob', '/etc/*.conf', wantlist=True) }}"
+```
+
+**password - Générer des mots de passe :**
+```yaml
+- name: Générer un mot de passe
+  set_fact:
+    db_password: "{{ lookup('password', '/tmp/passwordfile length=15 chars=ascii_letters,digits') }}"
+```
+
+## set_fact vs register
+
+### Quand utiliser `register`
+
+**Pour capturer le résultat d'une tâche :**
+
+```yaml
+- name: Vérifier un service
+  systemd:
+    name: nginx
+    state: started
+  register: nginx_status
+
+- name: Afficher le résultat
+  debug:
+    var: nginx_status
+
+- name: Récupérer des infos système
+  command: df -h /
+  register: disk_usage
+  changed_when: false
+
+- name: Parser la sortie
+  debug:
+    msg: "{{ disk_usage.stdout_lines }}"
+```
+
+**Structure typique d'un `register` :**
+```yaml
+result:
+  changed: true/false
+  failed: true/false
+  rc: 0  # code de retour (pour command/shell)
+  stdout: "..."  # sortie standard
+  stderr: "..."  # sortie d'erreur
+  stdout_lines: [...]  # stdout en tableau
+  # + attributs spécifiques au module
+```
+
+### Quand utiliser `set_fact`
+
+**Pour créer ou transformer des variables :**
+
+```yaml
+- name: Calculer des valeurs
+  set_fact:
+    app_version: "{{ lookup('file', 'VERSION') | trim }}"
+    deploy_timestamp: "{{ ansible_date_time.epoch }}"
+    config_hash: "{{ config_content | hash('sha256') }}"
+
+- name: Construire des structures complexes
+  set_fact:
+    application:
+      name: "{{ app_name }}"
+      version: "{{ app_version }}"
+      environment: "{{ env }}"
+      deployed_at: "{{ ansible_date_time.iso8601 }}"
+      deployed_by: "{{ lookup('env', 'USER') }}"
+
+- name: Transformer des données
+  set_fact:
+    server_ips: "{{ groups['webservers'] | map('extract', hostvars, 'ansible_host') | list }}"
+    active_services: "{{ services | selectattr('enabled') | map(attribute='name') | list }}"
+```
+
+### Combiner register et set_fact
+
+```yaml
+- name: Obtenir la liste des packages
+  package_facts:
+    manager: auto
+  register: pkg_facts
+
+- name: Extraire les versions
+  set_fact:
+    installed_versions:
+      nginx: "{{ ansible_facts.packages['nginx'][0].version if 'nginx' in ansible_facts.packages else 'not installed' }}"
+      postgresql: "{{ ansible_facts.packages['postgresql'][0].version if 'postgresql' in ansible_facts.packages else 'not installed' }}"
+
+- name: Vérifier un fichier
+  stat:
+    path: /opt/app/current
+  register: app_link
+
+- name: Déterminer la version déployée
+  set_fact:
+    current_version: "{{ app_link.stat.lnk_target | basename if app_link.stat.exists and app_link.stat.islnk else 'none' }}"
+```
+
+## Magic Variables
+
+Variables spéciales disponibles automatiquement dans tous les playbooks.
+
+### hostvars
+
+Accéder aux variables et facts d'autres hôtes.
+
+```yaml
+- name: Utiliser hostvars
+  debug:
+    msg: |
+      # Variables de l'hôte actuel
+      Mon IP : {{ hostvars[inventory_hostname].ansible_default_ipv4.address }}
+
+      # Variables d'un autre hôte
+      IP du serveur DB : {{ hostvars['db-server'].ansible_default_ipv4.address }}
+
+      # Liste des IPs de tous les webservers
+      {% for host in groups['webservers'] %}
+      - {{ hostvars[host].ansible_host }} ({{ hostvars[host].ansible_hostname }})
+      {% endfor %}
+
+- name: Construire une configuration
+  set_fact:
+    database_servers: |
+      {% for host in groups['database'] %}
+      {{ hostvars[host].ansible_host }}:{{ hostvars[host].db_port | default(5432) }}
+      {% endfor %}
+```
+
+### groups
+
+Listes des hôtes par groupe d'inventaire.
+
+```yaml
+- name: Afficher les groupes
+  debug:
+    msg: |
+      Tous les hôtes : {{ groups['all'] }}
+      Webservers : {{ groups['webservers'] }}
+      Serveurs DB : {{ groups['database'] }}
+      Hôtes non groupés : {{ groups['ungrouped'] }}
+
+- name: Construire une liste de backends
+  set_fact:
+    backend_servers: "{{ groups['app'] | map('extract', hostvars, 'ansible_host') | list }}"
+
+- name: Configurer avec tous les serveurs d'un groupe
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  vars:
+    backends: "{{ groups['webservers'] }}"
+```
+
+**Template `haproxy.cfg.j2` :**
+```jinja2
+backend web_cluster
+    balance roundrobin
+{% for host in backends %}
+    server {{ host }} {{ hostvars[host].ansible_host }}:{{ hostvars[host].http_port | default(80) }} check
+{% endfor %}
+```
+
+### group_names
+
+Liste des groupes auxquels appartient l'hôte actuel.
+
+```yaml
+- name: Configuration conditionnelle par groupe
+  debug:
+    msg: "Cet hôte est dans les groupes : {{ group_names }}"
+
+- name: Tâche pour les webservers uniquement
+  service:
+    name: nginx
+    state: started
+  when: "'webservers' in group_names"
+
+- name: Configuration multi-environnement
+  template:
+    src: "app.conf.j2"
+    dest: "/etc/app/config.yml"
+  vars:
+    is_production: "{{ 'production' in group_names }}"
+    is_staging: "{{ 'staging' in group_names }}"
+    enable_debug: "{{ 'development' in group_names }}"
+```
+
+### inventory_hostname
+
+Nom de l'hôte tel que défini dans l'inventaire.
+
+```yaml
+- name: Utiliser inventory_hostname
+  debug:
+    msg: |
+      Inventory name : {{ inventory_hostname }}
+      Short name : {{ inventory_hostname_short }}
+      Real hostname : {{ ansible_hostname }}
+      FQDN : {{ ansible_fqdn }}
+
+- name: Configuration spécifique par hôte
+  copy:
+    src: "configs/{{ inventory_hostname }}.conf"
+    dest: /etc/myapp/config.conf
+```
+
+### ansible_play_hosts et ansible_play_batch
+
+```yaml
+- name: Hôtes dans le play
+  debug:
+    msg: |
+      # Tous les hôtes du play actuel
+      Play hosts : {{ ansible_play_hosts }}
+
+      # Batch actuel (si serial est utilisé)
+      Play batch : {{ ansible_play_batch }}
+
+      # Hôtes qui ont échoué
+      Failed hosts : {{ ansible_play_hosts_all | difference(ansible_play_hosts) }}
+```
+
+### playbook_dir et inventory_dir
+
+```yaml
+- name: Chemins utiles
+  debug:
+    msg: |
+      Répertoire du playbook : {{ playbook_dir }}
+      Répertoire de l'inventaire : {{ inventory_dir }}
+      Fichier de l'inventaire : {{ inventory_file }}
+
+- name: Charger un fichier relatif
+  include_vars:
+    file: "{{ playbook_dir }}/vars/custom.yml"
+
+- name: Template avec chemin relatif
+  template:
+    src: "{{ playbook_dir }}/templates/config.j2"
+    dest: /etc/app/config
+```
+
+## Exemples pratiques complets
+
+### Exemple 1 : Configuration multi-environnement
+
+**Structure :**
+```
+├── inventories/
+│   ├── production/
+│   │   ├── hosts
+│   │   ├── group_vars/
+│   │   │   ├── all.yml
+│   │   │   └── webservers.yml
+│   │   └── host_vars/
+│   │       └── web-01.yml
+│   └── staging/
+│       ├── hosts
+│       └── group_vars/
+│           └── all.yml
+├── roles/
+│   └── webapp/
+│       ├── defaults/main.yml
+│       ├── vars/main.yml
+│       └── tasks/main.yml
+└── deploy.yml
+```
+
+**`inventories/production/group_vars/all.yml` :**
+```yaml
+env: production
+app_version: "2.1.0"
+log_level: warning
+enable_debug: false
+max_connections: 1000
+```
+
+**`inventories/production/group_vars/webservers.yml` :**
+```yaml
+http_port: 80
+https_port: 443
+worker_processes: 16
+```
+
+**`inventories/production/host_vars/web-01.yml` :**
+```yaml
+# Override pour un serveur spécifique
+worker_processes: 32
+enable_monitoring: true
+```
+
+**`roles/webapp/defaults/main.yml` :**
+```yaml
+# Valeurs par défaut (faible priorité)
+http_port: 8080
+worker_processes: 4
+log_level: info
+enable_debug: true
+```
+
+**`roles/webapp/tasks/main.yml` :**
+```yaml
+---
+- name: Afficher la configuration effective
+  debug:
+    msg: |
+      Environnement : {{ env }}
+      Version : {{ app_version }}
+      Port HTTP : {{ http_port }}
+      Workers : {{ worker_processes }}
+      Log level : {{ log_level }}
+      Debug : {{ enable_debug }}
+
+- name: Déployer la configuration
+  template:
+    src: app.conf.j2
+    dest: /etc/webapp/config.yml
+  notify: Restart application
+```
+
+**Exécution :**
+```bash
+# Production (utilise group_vars et host_vars)
+ansible-playbook -i inventories/production deploy.yml
+
+# Override ponctuel
+ansible-playbook -i inventories/production deploy.yml -e "worker_processes=8"
+```
+
+### Exemple 2 : Génération de configuration avec facts
+
+```yaml
+---
+- name: Configuration automatique basée sur les facts
+  hosts: webservers
+  tasks:
+    - name: Calculer la configuration optimale
+      set_fact:
+        # Workers basés sur les CPU
+        optimal_workers: "{{ ansible_processor_vcpus }}"
+
+        # Mémoire par worker (70% de la RAM totale)
+        memory_per_worker: "{{ (ansible_memtotal_mb * 0.7 / ansible_processor_vcpus) | int }}"
+
+        # Connections max
+        max_connections: "{{ (ansible_processor_vcpus * 1024) | int }}"
+
+        # Swap alert threshold
+        swap_alert_threshold: "{{ (ansible_swaptotal_mb * 0.8) | int }}"
+
+    - name: Construire la config complète
+      set_fact:
+        server_config:
+          hostname: "{{ ansible_hostname }}"
+          fqdn: "{{ ansible_fqdn }}"
+          ip_address: "{{ ansible_default_ipv4.address }}"
+          os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+          kernel: "{{ ansible_kernel }}"
+          resources:
+            cpus: "{{ ansible_processor_vcpus }}"
+            memory_mb: "{{ ansible_memtotal_mb }}"
+            swap_mb: "{{ ansible_swaptotal_mb }}"
+            disk_gb: "{{ (ansible_mounts[0].size_total / 1024 / 1024 / 1024) | round(2) }}"
+          tuning:
+            workers: "{{ optimal_workers }}"
+            memory_per_worker: "{{ memory_per_worker }}"
+            max_connections: "{{ max_connections }}"
+          monitoring:
+            swap_alert: "{{ swap_alert_threshold }}"
+            disk_alert_percent: 85
+
+    - name: Sauvegarder la configuration
+      copy:
+        content: "{{ server_config | to_nice_yaml }}"
+        dest: "/etc/server-config.yml"
+```
+
+### Exemple 3 : Déploiement avec custom facts
+
+**Créer le custom fact sur les serveurs :**
+```yaml
+- name: Installer custom facts
+  hosts: all
+  tasks:
+    - name: Créer le répertoire facts
+      file:
+        path: /etc/ansible/facts.d
+        state: directory
+        mode: '0755'
+
+    - name: Déployer le fact applicatif
+      copy:
+        content: |
+          #!/bin/bash
+          cat <<EOF
+          {
+            "version": "$(cat /opt/app/VERSION 2>/dev/null || echo 'not_installed')",
+            "deployed_at": "$(stat -c %y /opt/app/current 2>/dev/null || echo 'never')",
+            "uptime_seconds": "$(systemctl show -p ActiveEnterTimestamp app.service 2>/dev/null | cut -d= -f2 | xargs -I{} date -d "{}" +%s 2>/dev/null || echo '0')",
+            "disk_usage_mb": "$(du -sm /opt/app 2>/dev/null | cut -f1 || echo '0')"
+          }
+          EOF
+        dest: /etc/ansible/facts.d/app.fact
+        mode: '0755'
+
+    - name: Recharger les facts
+      setup:
+        filter: ansible_local
+```
+
+**Utiliser les custom facts :**
+```yaml
+- name: Déploiement basé sur custom facts
+  hosts: webservers
+  tasks:
+    - name: Vérifier la version actuelle
+      debug:
+        msg: "Version installée : {{ ansible_local.app.version }}"
+
+    - name: Décider du type de déploiement
+      set_fact:
+        deployment_type: "{{ 'upgrade' if ansible_local.app.version != 'not_installed' else 'fresh_install' }}"
+
+    - name: Déployer seulement si nécessaire
+      include_tasks: "deploy_{{ deployment_type }}.yml"
+      when: ansible_local.app.version != target_version
+
+    - name: Calculer l'uptime
+      set_fact:
+        app_uptime_hours: "{{ ((ansible_date_time.epoch | int) - (ansible_local.app.uptime_seconds | int)) / 3600 | round(1) }}"
+      when: ansible_local.app.uptime_seconds | int > 0
+
+    - name: Alerter si gros disque
+      debug:
+        msg: "ATTENTION : L'application utilise {{ ansible_local.app.disk_usage_mb }} MB"
+      when: ansible_local.app.disk_usage_mb | int > 10240  # > 10 GB
+```
+
+### Exemple 4 : Construction dynamique d'inventaire
+
+```yaml
+---
+- name: Génération dynamique de configuration cluster
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Construire la topologie du cluster
+      set_fact:
+        cluster_topology:
+          masters: "{{ groups['k8s_masters'] | map('extract', hostvars) | list }}"
+          workers: "{{ groups['k8s_workers'] | map('extract', hostvars) | list }}"
+          etcd_nodes: "{{ groups['etcd'] | map('extract', hostvars) | list }}"
+
+    - name: Générer la configuration etcd
+      set_fact:
+        etcd_cluster_config: |
+          {% for node in groups['etcd'] %}
+          {{ hostvars[node].inventory_hostname }}=https://{{ hostvars[node].ansible_host }}:2380{% if not loop.last %},{% endif %}
+          {% endfor %}
+
+    - name: Construire les endpoints API
+      set_fact:
+        api_endpoints: "{{ groups['k8s_masters'] | map('extract', hostvars, 'ansible_host') | map('regex_replace', '^(.*)$', 'https://\\1:6443') | list }}"
+
+    - name: Générer le fichier de configuration
+      copy:
+        content: |
+          # Configuration générée automatiquement
+          # Date: {{ ansible_date_time.iso8601 }}
+
+          ETCD_CLUSTER={{ etcd_cluster_config | trim }}
+          API_ENDPOINTS={{ api_endpoints | join(',') }}
+
+          # Masters
+          {% for host in groups['k8s_masters'] %}
+          MASTER_{{ loop.index }}={{ hostvars[host].ansible_host }}
+          {% endfor %}
+
+          # Workers
+          {% for host in groups['k8s_workers'] %}
+          WORKER_{{ loop.index }}={{ hostvars[host].ansible_host }}
+          {% endfor %}
+        dest: ./cluster-config.env
+
+    - name: Afficher la topologie
+      debug:
+        msg: |
+          Cluster Kubernetes
+          ==================
+          Masters: {{ groups['k8s_masters'] | length }}
+          Workers: {{ groups['k8s_workers'] | length }}
+          ETCD nodes: {{ groups['etcd'] | length }}
+
+          API Endpoints:
+          {{ api_endpoints | to_nice_yaml }}
+```
+
+---
+
+## Résumé des bonnes pratiques
+
+1. **Précédence** : Utiliser `defaults/` pour les valeurs modifiables, `vars/` pour les constantes
+2. **Facts** : Désactiver `gather_facts` si non nécessaire pour la performance
+3. **Custom facts** : Pour des informations métier ou état applicatif
+4. **set_fact** : Pour calculer/transformer, avec `cacheable: true` si coûteux
+5. **register** : Pour capturer les résultats de tâches
+6. **Magic variables** : Pour construire des configurations dynamiques multi-hôtes
+7. **Jinja2** : Privilégier les filtres natifs (performance) avant les lookups
+8. **Extra vars** : Réserver pour les overrides ponctuels en CLI
+
+**Ordre de lecture recommandé :**
+1. Comprendre les types de variables
+2. Maîtriser la précédence (essentiel pour déboguer)
+3. Exploiter les facts système
+4. Créer des custom facts pour l'état applicatif
+5. Utiliser Jinja2 pour des transformations complexes
+6. Combiner avec les magic variables pour les déploiements multi-hôtes

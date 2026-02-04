@@ -1,0 +1,1589 @@
+# AWX & Automation Platform
+
+Documentation complète sur AWX et Ansible Automation Platform (AAP).
+
+## AWX vs Ansible Tower vs Ansible Automation Platform
+
+### Différences et évolution
+
+**AWX** : Projet open-source communautaire
+- Version upstream d'Ansible Tower
+- Développement rapide, nouvelles fonctionnalités fréquentes
+- Pas de support commercial officiel
+- Idéal pour dev/test ou production si vous gérez vous-même
+- Licence Apache 2.0
+
+**Ansible Tower** : Produit commercial (legacy)
+- Version entreprise d'AWX avec support Red Hat
+- Cycle de release plus lent, versions stables
+- Support, SLA et certifications
+- Nom déprécié depuis 2021
+
+**Ansible Automation Platform (AAP)** : Nouvelle plateforme complète
+- Remplace Ansible Tower depuis la v4
+- Inclut : automation controller (ex-Tower), automation hub, automation services catalog
+- Architecture moderne (Kubernetes-native)
+- Support entreprise complet
+- Licensing par node ou par utilisateur
+
+### Tableau comparatif
+
+| Fonctionnalité | AWX | AAP |
+|----------------|-----|-----|
+| **Prix** | Gratuit | Payant (subscription) |
+| **Support** | Communauté | Red Hat officiel |
+| **Mises à jour** | Fréquentes (~2 semaines) | Stables (~3-6 mois) |
+| **Production** | Possible mais non supporté | Recommandé |
+| **Ansible Hub** | Non inclus | Inclus (private collections) |
+| **SLA** | Aucun | Garanti |
+
+## Installation AWX
+
+### Installation avec Docker Compose
+
+**Prérequis** :
+```bash
+# Docker et Docker Compose
+docker --version  # >= 20.10
+docker-compose --version  # >= 1.29
+
+# Ressources minimales
+# - 4GB RAM
+# - 2 CPU cores
+# - 20GB disque
+```
+
+**Installation** :
+```bash
+# Cloner le repo AWX
+git clone https://github.com/ansible/awx.git
+cd awx
+
+# Checkout sur une version stable
+git checkout tags/23.3.0  # Version stable
+
+# Générer les fichiers de configuration
+cd tools/docker-compose
+make docker-compose-build
+
+# Configuration personnalisée (optionnel)
+cat > inventory <<EOF
+localhost ansible_connection=local ansible_python_interpreter="/usr/bin/env python3"
+
+[all:vars]
+# Mot de passe admin par défaut
+admin_password=VotreMotDePasse123!
+
+# Configuration base de données
+pg_password=awxpostgres
+pg_username=awx
+pg_database=awx
+
+# Port d'accès web
+host_port=80
+EOF
+
+# Lancer AWX
+make docker-compose
+
+# Vérifier les conteneurs
+docker ps
+# Vous devriez voir :
+# - awx_web
+# - awx_task
+# - awx_postgres
+# - awx_redis
+```
+
+**Accès** :
+```
+URL : http://localhost:80
+User : admin
+Password : VotreMotDePasse123!
+```
+
+### Installation sur Kubernetes avec AWX Operator
+
+**Prérequis** :
+```bash
+# Cluster Kubernetes (Minikube, K3s, OpenShift, EKS, etc.)
+kubectl version
+
+# Kustomize
+kustomize version
+```
+
+**Installation de l'opérateur** :
+```bash
+# Créer le namespace
+kubectl create namespace awx
+
+# Installer l'opérateur AWX
+kubectl apply -k github.com/ansible/awx-operator/config/default
+
+# Vérifier l'installation
+kubectl get pods -n awx-operator-system
+```
+
+**Déployer une instance AWX** :
+```yaml
+# awx-instance.yaml
+apiVersion: awx.ansible.com/v1beta1
+kind: AWX
+metadata:
+  name: awx-prod
+  namespace: awx
+spec:
+  # Configuration du service
+  service_type: NodePort
+
+  # Mot de passe admin
+  admin_user: admin
+  admin_password_secret: awx-admin-password
+
+  # PostgreSQL
+  postgres_configuration_secret: awx-postgres-configuration
+
+  # Stockage
+  postgres_storage_class: standard
+  postgres_storage_requirements:
+    requests:
+      storage: 8Gi
+
+  projects_persistence: true
+  projects_storage_class: standard
+  projects_storage_size: 8Gi
+
+  # Ressources
+  web_resource_requirements:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  task_resource_requirements:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+```
+
+**Créer les secrets** :
+```bash
+# Secret admin password
+kubectl create secret generic awx-admin-password \
+  --from-literal=password='VotreMotDePasse123!' \
+  -n awx
+
+# Secret PostgreSQL
+kubectl create secret generic awx-postgres-configuration \
+  --from-literal=host='awx-postgres' \
+  --from-literal=port='5432' \
+  --from-literal=database='awx' \
+  --from-literal=username='awx' \
+  --from-literal=password='awxpostgres' \
+  --from-literal=type='managed' \
+  -n awx
+
+# Déployer AWX
+kubectl apply -f awx-instance.yaml -n awx
+
+# Suivre le déploiement
+kubectl logs -f deployments/awx-operator-controller-manager \
+  -c awx-manager -n awx-operator-system
+
+# Vérifier les pods
+kubectl get pods -n awx
+```
+
+**Accès** :
+```bash
+# Via NodePort
+kubectl get svc -n awx
+# Récupérer le port (ex: 30080)
+# Accès : http://<node-ip>:30080
+
+# Ou via port-forward
+kubectl port-forward svc/awx-prod-service 8080:80 -n awx
+# Accès : http://localhost:8080
+```
+
+## Concepts fondamentaux
+
+### Organizations (Organisations)
+
+Collections logiques qui regroupent utilisateurs, équipes, projets et inventaires.
+
+**Création via UI** : Organizations → Add
+
+**Création via API** :
+```bash
+curl -X POST https://awx.example.com/api/v2/organizations/ \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Production",
+    "description": "Environnement de production",
+    "max_hosts": 100,
+    "custom_virtualenv": null
+  }'
+```
+
+**Bonnes pratiques** :
+- Une organization par environnement (Dev, Staging, Prod)
+- Ou par département (IT, DevOps, SecOps)
+- Isolation stricte des ressources entre organizations
+
+### Teams (Équipes)
+
+Groupes d'utilisateurs au sein d'une organization.
+
+**Exemple de structure** :
+```
+Organization: Production
+├── Team: DevOps
+│   ├── admin-user
+│   └── deploy-user
+├── Team: Developers
+│   ├── dev1-user
+│   └── dev2-user
+└── Team: Auditors (read-only)
+    └── audit-user
+```
+
+**Rôles disponibles par ressource** :
+- **Admin** : contrôle total
+- **Use** : peut utiliser (exécuter jobs)
+- **Update** : peut modifier
+- **Read** : lecture seule
+- **Execute** : peut lancer (job templates)
+
+### Users (Utilisateurs)
+
+Trois types :
+1. **Normal User** : accès standard
+2. **System Auditor** : lecture seule globale
+3. **System Administrator** : admin global
+
+**Création via CLI (awx-cli)** :
+```bash
+# Installation
+pip install awxkit
+
+# Configuration
+export TOWER_HOST=https://awx.example.com
+export TOWER_USERNAME=admin
+export TOWER_PASSWORD=password
+export TOWER_VERIFY_SSL=false
+
+# Créer un utilisateur
+awx users create \
+  --username deploy-user \
+  --password 'SecurePass123!' \
+  --email deploy@example.com \
+  --first_name Deploy \
+  --last_name User
+
+# Ajouter à une équipe
+awx teams associate \
+  --team "DevOps" \
+  --user "deploy-user"
+```
+
+## Projets : gestion du code Ansible
+
+### Configuration SCM (Git)
+
+**Exemple de projet Git** :
+```yaml
+Name: playbooks-production
+Description: Playbooks pour l'environnement de production
+Organization: Production
+
+SCM Type: Git
+SCM URL: https://github.com/company/ansible-playbooks.git
+SCM Branch/Tag/Commit: main
+
+# Authentification
+SCM Credential: github-readonly-token
+
+# Options
+☑ Clean: supprime les modifications locales
+☑ Delete: supprime le repo avant de cloner
+☑ Update Revision on Launch: pull avant chaque job
+☐ Allow Branch Override: permet de changer la branche
+
+# Cache
+SCM Update Cache Timeout: 0 (désactivé)
+```
+
+**Credential Git (SSH)** :
+```yaml
+Name: github-deploy-key
+Credential Type: Source Control
+Username: git
+SSH Private Key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn
+  ...
+  -----END OPENSSH PRIVATE KEY-----
+```
+
+### Synchronisation automatique
+
+**Webhook GitHub** :
+```bash
+# Dans AWX : Project → Notifications → Webhook
+# Copier l'URL générée
+
+# Dans GitHub : Settings → Webhooks → Add webhook
+Payload URL: https://awx.example.com/api/v2/job_templates/42/github/
+Content type: application/json
+Secret: <généré par AWX>
+Events: ☑ Just the push event
+```
+
+**Scheduled Sync** :
+```yaml
+# Schedules → Add
+Name: Sync playbooks every hour
+Start Date/Time: 2024-01-01 00:00:00
+Local Time Zone: Europe/Paris
+Repeat Frequency: Hour
+Every: 1 hours
+```
+
+## Inventaires
+
+### Inventaire statique
+
+**Format INI** :
+```ini
+# /var/lib/awx/projects/inventory/hosts
+[webservers]
+web01.example.com ansible_host=192.168.1.10
+web02.example.com ansible_host=192.168.1.11
+
+[databases]
+db01.example.com ansible_host=192.168.1.20
+db02.example.com ansible_host=192.168.1.21
+
+[production:children]
+webservers
+databases
+
+[production:vars]
+ansible_user=deploy
+ansible_become=true
+ansible_python_interpreter=/usr/bin/python3
+```
+
+**Import dans AWX** :
+```bash
+# Via le projet
+Project: playbooks-production
+Inventory File: inventory/hosts
+
+# Ou en manuel dans AWX
+Inventories → Add → Add Inventory
+Name: Production Servers
+Organization: Production
+
+# Ajouter les hosts manuellement
+Hosts → Add
+Host Name: web01.example.com
+Variables:
+  ansible_host: 192.168.1.10
+  ansible_user: deploy
+```
+
+### Inventaire dynamique (Cloud)
+
+**Source AWS EC2** :
+```yaml
+# Configuration dans AWX
+Inventories → Production Servers → Sources → Add
+
+Name: AWS EC2 Production
+Source: Amazon EC2
+Credential: aws-production-readonly
+
+# Options
+☑ Overwrite: remplace l'inventaire
+☑ Update on Launch: refresh avant chaque job
+☐ Overwrite Variables: écrase les vars
+
+# Régions
+Regions: eu-west-1,eu-central-1
+
+# Filtres (optionnel)
+Instance Filters: tag:Environment=production,tag:Managed=ansible
+
+# Variables source
+Source Variables:
+  keyed_groups:
+    - key: tags.Environment
+      prefix: env
+    - key: tags.Role
+      prefix: role
+    - key: placement.availability_zone
+      prefix: az
+  hostnames:
+    - tag:Name
+    - dns-name
+  compose:
+    ansible_host: public_ip_address
+```
+
+**Résultat dans l'inventaire** :
+```
+Groupes automatiques :
+- env_production
+- role_webserver
+- role_database
+- az_eu_west_1a
+- az_eu_west_1b
+
+Hosts :
+- web-prod-01 (ansible_host: 54.123.45.67)
+- web-prod-02 (ansible_host: 54.123.45.68)
+```
+
+**Autres sources dynamiques** :
+- Google Compute Engine
+- Microsoft Azure Resource Manager
+- OpenStack
+- VMware vCenter
+- Red Hat Satellite 6
+- Red Hat CloudForms
+- Custom script (retourne JSON)
+
+### Smart Inventories
+
+Inventaires virtuels basés sur des filtres dynamiques.
+
+**Exemple** :
+```yaml
+Name: Prod Web Servers Only
+Organization: Production
+Kind: Smart Inventory
+
+Host Filter:
+  name__icontains=web AND inventory.name="Production Servers"
+
+# Autre exemple : tous les serveurs Ubuntu en production
+Host Filter:
+  ansible_distribution="Ubuntu" AND
+  groups.name="production"
+```
+
+**Cas d'usage** :
+- Filtrer par OS : `ansible_distribution="CentOS"`
+- Par tag : `tags__contains="critical"`
+- Par inventaire source : `inventory.name__startswith="AWS"`
+- Combinaisons : `name__contains="db" AND ansible_distribution="RedHat"`
+
+## Credentials : gestion sécurisée
+
+### Types de credentials
+
+#### Machine Credential
+
+Pour se connecter aux machines cibles.
+
+```yaml
+Name: deploy-ssh-key
+Credential Type: Machine
+
+Username: deploy
+SSH Private Key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  ...
+  -----END OPENSSH PRIVATE KEY-----
+
+# Ou avec password
+Password: SecurePassword123!
+
+# Privilege Escalation
+Privilege Escalation Method: sudo
+Privilege Escalation Username: root
+Privilege Escalation Password: <optionnel>
+```
+
+#### Source Control Credential
+
+Pour Git/SVN.
+
+```yaml
+Name: gitlab-deploy-token
+Credential Type: Source Control
+
+Username: deploy-token
+Password: glpat-xxxxxxxxxxxx
+
+# Ou avec SSH
+SSH Private Key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  ...
+  -----END OPENSSH PRIVATE KEY-----
+```
+
+#### Vault Credential
+
+Pour déchiffrer les fichiers Ansible Vault.
+
+```yaml
+Name: prod-vault-password
+Credential Type: Vault
+
+Vault Password: MyVaultSecurePassword123!
+
+# Ou avec fichier
+Vault Password File: /path/to/vault_pass.txt
+```
+
+#### Cloud Credentials
+
+**AWS** :
+```yaml
+Name: aws-production
+Credential Type: Amazon Web Services
+
+Access Key: AKIAIOSFODNN7EXAMPLE
+Secret Key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# Ou via STS (recommandé)
+STS Token: <temporary-token>
+```
+
+**Azure** :
+```yaml
+Name: azure-production
+Credential Type: Microsoft Azure Resource Manager
+
+Subscription ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+Client ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+Client Secret: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Tenant ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+**GCP** :
+```yaml
+Name: gcp-production
+Credential Type: Google Compute Engine
+
+Service Account Email: ansible@project.iam.gserviceaccount.com
+RSA Private Key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+
+# Ou avec JSON key file
+Project: my-gcp-project
+Service Account JSON File: <upload .json>
+```
+
+### Credential Lookup Plugins
+
+Intégration avec des gestionnaires de secrets externes.
+
+**HashiCorp Vault** :
+```yaml
+# Configuration dans AWX
+Credential Type: Vault (custom)
+
+Server URL: https://vault.example.com:8200
+Token: s.xxxxxxxxxxxxxxxxxxxxxx
+API Version: v1
+
+# Référencer dans un credential
+Password: !vault |
+  secret/data/production/database/password
+```
+
+**CyberArk AIM** :
+```yaml
+Credential Type: CyberArk AIM
+
+URL: https://cyberark.example.com
+App ID: AnsibleApp
+Credential: {{ lookup('cyberark_aim', 'prod-db-password') }}
+```
+
+## Job Templates : exécution de playbooks
+
+### Configuration de base
+
+```yaml
+Name: Deploy Web Application
+Description: Déploie l'application web en production
+
+Job Type: Run (ou Check pour dry-run)
+Inventory: Production Servers
+Project: playbooks-production
+Playbook: deploy-webapp.yml
+
+Credentials:
+  - deploy-ssh-key (Machine)
+  - prod-vault-password (Vault)
+  - aws-production (AWS) [si besoin]
+
+# Options
+☑ Enable Privilege Escalation (--become)
+☑ Enable Fact Storage (enregistre les facts)
+☐ Enable Concurrent Jobs
+☑ Enable Webhook
+
+# Verbosity
+Verbosity: 0 (Normal)
+# 1 = -v, 2 = -vv, 3 = -vvv, 4 = -vvvv, 5 = Connection debug
+
+# Job Tags
+Job Tags: deploy,restart (--tags)
+Skip Tags: backup,cleanup (--skip-tags)
+
+# Limits
+Limit: webservers (--limit)
+```
+
+### Survey : formulaires dynamiques
+
+Permet de demander des variables avant l'exécution.
+
+**Exemple : choix de version** :
+```yaml
+# Job Template → Survey → Add
+Survey Enabled: Yes
+
+Questions:
+  1. Application Version:
+     Variable Name: app_version
+     Answer Type: Text
+     Default Answer: 1.0.0
+     Required: Yes
+
+  2. Target Environment:
+     Variable Name: target_env
+     Answer Type: Multiple Choice (single select)
+     Choices: |
+       staging
+       production
+     Default Answer: staging
+     Required: Yes
+
+  3. Restart Services:
+     Variable Name: restart_services
+     Answer Type: Multiple Choice (multiple select)
+     Choices: |
+       nginx
+       php-fpm
+       redis
+     Required: No
+
+  4. Rollback on Failure:
+     Variable Name: rollback_enabled
+     Answer Type: Boolean
+     Default Answer: Yes
+     Required: Yes
+```
+
+**Utilisation dans le playbook** :
+```yaml
+---
+- name: Deploy application
+  hosts: webservers
+  vars:
+    version: "{{ app_version }}"
+    environment: "{{ target_env }}"
+
+  tasks:
+    - name: Deploy version {{ version }} to {{ environment }}
+      ansible.builtin.git:
+        repo: https://github.com/company/webapp.git
+        dest: /var/www/app
+        version: "{{ version }}"
+
+    - name: Restart services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ restart_services | default([]) }}"
+      when: restart_services is defined
+```
+
+### Extra Variables
+
+Variables passées à l'exécution (priorité max).
+
+```yaml
+# Dans le Job Template
+Extra Variables:
+  env: production
+  debug: false
+  max_retries: 3
+  backup_enabled: true
+
+# Ou en YAML
+---
+env: production
+debug: false
+max_retries: 3
+```
+
+**Ordre de précédence** :
+1. Extra vars (Job Template)
+2. Task vars
+3. Block vars
+4. Role vars
+5. Play vars
+6. Inventory vars (host_vars, group_vars)
+7. Inventory defaults
+
+### Prompt on Launch
+
+Permet de modifier des paramètres au lancement.
+
+```yaml
+# Job Template → Options
+☑ Prompt on Launch:
+  ☑ Inventory
+  ☑ Credentials
+  ☑ Variables (extra_vars)
+  ☑ Verbosity
+  ☑ Job Tags
+  ☑ Limit
+```
+
+**Lancement via API** :
+```bash
+curl -X POST https://awx.example.com/api/v2/job_templates/42/launch/ \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "extra_vars": {
+      "app_version": "2.0.0",
+      "target_env": "production"
+    },
+    "limit": "web01.example.com",
+    "verbosity": 2
+  }'
+```
+
+## Workflows : orchestration complexe
+
+### Création d'un workflow
+
+**Exemple : Pipeline de déploiement complet** :
+
+```
+START
+  │
+  ├─→ [1] Pre-flight Checks ──(success)──→ [2] Backup Database
+  │                            (failure)──→ [FAILURE NODE]
+  │
+  └─→ [2] Backup Database ────(success)──→ [3] Deploy Application
+                              (failure)──→ [8] Notify Failure
+
+  [3] Deploy Application ─────(success)──→ [4] Run Tests
+                              (failure)──→ [7] Rollback
+
+  [4] Run Tests ──────────────(success)──→ [5] Approval Node
+                              (failure)──→ [7] Rollback
+
+  [5] Approval Node ──────────(approved)─→ [6] Update Load Balancer
+  │                           (denied)───→ [7] Rollback
+  │                           (timeout)──→ [7] Rollback
+
+  [6] Update Load Balancer ───(success)──→ [9] Notify Success
+                              (failure)──→ [8] Notify Failure
+
+  [7] Rollback ───────────────(always)───→ [8] Notify Failure
+
+  [8] Notify Failure ─────────────────────→ END
+  [9] Notify Success ─────────────────────→ END
+```
+
+### Configuration des nœuds
+
+**Node 1 : Pre-flight Checks** :
+```yaml
+Node Type: Job Template
+Job Template: preflight-checks
+Convergence: any (démarre si n'importe quel parent réussit)
+
+# Variables spécifiques au nœud
+Extra Data:
+  check_disk_space: true
+  check_connectivity: true
+```
+
+**Node 5 : Approval Node** :
+```yaml
+Node Type: Approval
+Name: Manager Approval Required
+Description: Déploiement en production nécessite validation
+Timeout: 3600 (1 heure)
+
+# Notifications pour les approbateurs
+Notifications:
+  - Slack: #deployments
+  - Email: managers@example.com
+```
+
+**Types de connexions** :
+- **On Success** (vert) : nœud suivant si succès
+- **On Failure** (rouge) : nœud suivant si échec
+- **Always** (bleu) : toujours exécuter le suivant
+
+### Convergence et divergence
+
+**Convergence** :
+```
+[Node A] ──→ [Node C]
+[Node B] ──→ [Node C]
+
+Node C options:
+- any: démarre si A OU B réussi
+- all: démarre si A ET B réussi
+```
+
+**Divergence (parallel execution)** :
+```
+[Node A] ──→ [Node B1] (deploy frontend)
+       └───→ [Node B2] (deploy backend)
+       └───→ [Node B3] (deploy database)
+
+# B1, B2, B3 s'exécutent en parallèle
+```
+
+### Variables entre nœuds
+
+**Passer des données entre jobs** :
+```yaml
+# Node 1 : Get Version Info
+- name: Set facts for next jobs
+  ansible.builtin.set_stats:
+    data:
+      app_version: "{{ version_number }}"
+      git_commit: "{{ commit_hash }}"
+      build_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+# Node 2 : Deploy (utilise les stats du Node 1)
+- name: Deploy version from previous job
+  ansible.builtin.debug:
+    msg: "Deploying {{ app_version }} ({{ git_commit }})"
+  vars:
+    app_version: "{{ workflow_job.extra_vars.app_version }}"
+```
+
+## Schedules : planification
+
+### Création de schedule
+
+**Sauvegarde quotidienne** :
+```yaml
+Name: Daily Database Backup
+Enabled: Yes
+
+Start Date/Time: 2024-01-01 02:00:00
+Local Time Zone: Europe/Paris
+
+Repeat Frequency: Daily
+Run Every: 1 days
+
+# Ou avec RRULE (plus puissant)
+RRULE: DTSTART:20240101T020000 FREQ=DAILY;INTERVAL=1
+```
+
+### Exemples RRULE
+
+**Tous les lundis à 8h** :
+```
+DTSTART;TZID=Europe/Paris:20240101T080000
+RRULE:FREQ=WEEKLY;BYDAY=MO
+```
+
+**Premier jour du mois à 3h** :
+```
+DTSTART;TZID=Europe/Paris:20240101T030000
+RRULE:FREQ=MONTHLY;BYMONTHDAY=1
+```
+
+**Tous les 15 minutes pendant les heures de bureau** :
+```
+DTSTART;TZID=Europe/Paris:20240101T090000
+RRULE:FREQ=MINUTELY;INTERVAL=15;BYHOUR=9,10,11,12,13,14,15,16,17
+RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR
+```
+
+**Avec exception (sauf jours fériés)** :
+```
+DTSTART;TZID=Europe/Paris:20240101T080000
+RRULE:FREQ=DAILY
+EXDATE:20240101,20240501,20240714,20241225
+```
+
+### Jitter (décalage aléatoire)
+
+Évite les pics de charge si plusieurs jobs démarrent simultanément.
+
+```yaml
+Name: Patch Servers Nightly
+Schedule: Every night at 3:00 AM
+Jitter: Enabled
+Max Jitter: 300 seconds (5 minutes)
+
+# Les jobs démarreront entre 3h00 et 3h05
+```
+
+## Notifications
+
+### Configuration Slack
+
+**Credential Slack** :
+```yaml
+Name: slack-deployments
+Credential Type: Slack
+
+Token: xoxb-xxxxxxxxxxxxx-xxxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+**Notification Template** :
+```yaml
+# Job Template → Notifications → Add
+
+Name: Slack Deploy Notification
+Type: Slack
+Credential: slack-deployments
+
+# Destinations
+Destination Channels: #deployments,#ops-alerts
+
+# Message personnalisé (JSON)
+Customize Messages:
+  Started:
+    {
+      "text": "🚀 Deployment started",
+      "attachments": [{
+        "color": "#36a64f",
+        "fields": [
+          {"title": "Job", "value": "{{ job_friendly_name }}", "short": true},
+          {"title": "User", "value": "{{ job.created_by.username }}", "short": true},
+          {"title": "Inventory", "value": "{{ inventory.name }}", "short": true}
+        ]
+      }]
+    }
+
+  Success:
+    {
+      "text": "✅ Deployment succeeded",
+      "attachments": [{
+        "color": "good",
+        "fields": [
+          {"title": "Job", "value": "{{ job_friendly_name }}"},
+          {"title": "Duration", "value": "{{ job.elapsed }} seconds"},
+          {"title": "URL", "value": "{{ job_url }}"}
+        ]
+      }]
+    }
+
+  Failure:
+    {
+      "text": "❌ Deployment failed",
+      "attachments": [{
+        "color": "danger",
+        "fields": [
+          {"title": "Job", "value": "{{ job_friendly_name }}"},
+          {"title": "Error", "value": "{{ job.result_traceback }}"}
+        ]
+      }]
+    }
+
+# Événements à notifier
+Notify on:
+  ☑ Job Start
+  ☑ Job Success
+  ☑ Job Failure
+  ☐ Approval Pending
+  ☐ Approval Approved
+  ☐ Approval Denied
+```
+
+### Configuration Email
+
+**Credential Email** :
+```yaml
+Name: smtp-notifications
+Credential Type: Email
+
+SMTP Host: smtp.gmail.com
+SMTP Port: 587
+Use TLS: Yes
+Username: ansible-bot@example.com
+Password: AppSpecificPassword123
+Sender Email: noreply-ansible@example.com
+```
+
+**Notification Email** :
+```yaml
+Type: Email
+Credential: smtp-notifications
+
+Recipients:
+  - ops-team@example.com
+  - manager@example.com
+
+Subject Template:
+  [AWX] {{ job_friendly_name }} - {{ job.status }}
+
+Body Template (HTML):
+  <h2>Job: {{ job_friendly_name }}</h2>
+  <p><strong>Status:</strong> {{ job.status }}</p>
+  <p><strong>Started by:</strong> {{ job.created_by.username }}</p>
+  <p><strong>Inventory:</strong> {{ inventory.name }}</p>
+  <p><strong>Duration:</strong> {{ job.elapsed }}s</p>
+  <p><a href="{{ job_url }}">View in AWX</a></p>
+  {% if job.status == "failed" %}
+  <h3>Error Details:</h3>
+  <pre>{{ job.result_traceback }}</pre>
+  {% endif %}
+```
+
+### Webhook personnalisé
+
+**Intégration avec ServiceNow / Jira / PagerDuty** :
+
+```yaml
+Type: Webhook
+HTTP Method: POST
+URL: https://api.example.com/webhooks/ansible
+
+Headers:
+  Content-Type: application/json
+  Authorization: Bearer SECRET_TOKEN
+
+# Body (JSON)
+{
+  "event": "{{ job.status }}",
+  "job_name": "{{ job_friendly_name }}",
+  "job_id": {{ job.id }},
+  "inventory": "{{ inventory.name }}",
+  "started_by": "{{ job.created_by.username }}",
+  "started_at": "{{ job.started }}",
+  "finished_at": "{{ job.finished }}",
+  "duration": {{ job.elapsed }},
+  "url": "{{ job_url }}",
+  "extra_vars": {{ job.extra_vars | to_json }}
+}
+
+# Vérification SSL
+Verify SSL: Yes
+```
+
+## API REST : automatisation complète
+
+### Authentification
+
+**Token OAuth2** (recommandé) :
+```bash
+# Créer un token
+curl -X POST https://awx.example.com/api/v2/tokens/ \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Token pour CI/CD",
+    "application": null,
+    "scope": "write"
+  }'
+
+# Response:
+{
+  "id": 123,
+  "token": "AbCdEf123456789...",
+  "expires": "3020-01-01T00:00:00.000000Z"
+}
+
+# Utiliser le token
+curl -H "Authorization: Bearer AbCdEf123456789..." \
+  https://awx.example.com/api/v2/me/
+```
+
+**Basic Auth** (moins sécurisé) :
+```bash
+curl -u username:password https://awx.example.com/api/v2/me/
+```
+
+### Endpoints principaux
+
+#### Lister les ressources
+
+**Job Templates** :
+```bash
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/job_templates/" | jq
+
+# Filtrer par nom
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/job_templates/?name__contains=deploy"
+
+# Pagination
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/job_templates/?page_size=50&page=2"
+```
+
+**Inventories** :
+```bash
+# Tous les inventaires
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/inventories/"
+
+# Hosts d'un inventaire
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/inventories/5/hosts/"
+
+# Groups d'un inventaire
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/inventories/5/groups/"
+```
+
+**Projects** :
+```bash
+# Lister les projets
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/projects/"
+
+# Synchroniser un projet
+curl -X POST \
+  -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/projects/10/update/"
+```
+
+#### Lancer un job
+
+**Simple launch** :
+```bash
+curl -X POST \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://awx.example.com/api/v2/job_templates/42/launch/" \
+  -d '{}'
+```
+
+**Avec paramètres** :
+```bash
+curl -X POST \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://awx.example.com/api/v2/job_templates/42/launch/" \
+  -d '{
+    "extra_vars": {
+      "app_version": "2.0.0",
+      "target_env": "production",
+      "rollback_enabled": true
+    },
+    "inventory": 5,
+    "limit": "webservers",
+    "verbosity": 1,
+    "job_tags": "deploy,restart",
+    "skip_tags": "backup"
+  }'
+
+# Response:
+{
+  "job": 789,
+  "ignored_fields": {},
+  "id": 789,
+  "type": "job",
+  "url": "/api/v2/jobs/789/",
+  ...
+}
+```
+
+**Suivre le job** :
+```bash
+# Status
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/jobs/789/"
+
+# Output en temps réel (polling)
+while true; do
+  curl -s -H "Authorization: Bearer TOKEN" \
+    "https://awx.example.com/api/v2/jobs/789/" | jq -r '.status'
+  sleep 2
+done
+
+# Logs complets
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/jobs/789/stdout/?format=txt"
+```
+
+#### Workflows
+
+**Lancer un workflow** :
+```bash
+curl -X POST \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://awx.example.com/api/v2/workflow_job_templates/15/launch/" \
+  -d '{
+    "extra_vars": {
+      "deploy_version": "3.0.0"
+    }
+  }'
+```
+
+**Statut du workflow** :
+```bash
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/workflow_jobs/456/"
+
+# Voir les nœuds du workflow
+curl -H "Authorization: Bearer TOKEN" \
+  "https://awx.example.com/api/v2/workflow_jobs/456/workflow_nodes/"
+```
+
+#### Créer des ressources
+
+**Créer un host** :
+```bash
+curl -X POST \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://awx.example.com/api/v2/inventories/5/hosts/" \
+  -d '{
+    "name": "newserver.example.com",
+    "description": "New production server",
+    "enabled": true,
+    "variables": "ansible_host: 192.168.1.50\nansible_user: deploy"
+  }'
+```
+
+**Créer un credential** :
+```bash
+curl -X POST \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://awx.example.com/api/v2/credentials/" \
+  -d '{
+    "name": "new-ssh-key",
+    "description": "SSH key for new servers",
+    "organization": 1,
+    "credential_type": 1,
+    "inputs": {
+      "username": "deploy",
+      "ssh_key_data": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+    }
+  }'
+```
+
+### Intégration CI/CD
+
+**GitLab CI example** :
+```yaml
+# .gitlab-ci.yml
+deploy:production:
+  stage: deploy
+  only:
+    - main
+  script:
+    - |
+      JOB_ID=$(curl -s -X POST \
+        -H "Authorization: Bearer $AWX_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$AWX_URL/api/v2/job_templates/$JOB_TEMPLATE_ID/launch/" \
+        -d "{\"extra_vars\": {\"git_commit\": \"$CI_COMMIT_SHA\"}}" \
+        | jq -r '.job')
+
+      echo "AWX Job ID: $JOB_ID"
+
+      # Attendre la fin du job
+      while true; do
+        STATUS=$(curl -s -H "Authorization: Bearer $AWX_TOKEN" \
+          "$AWX_URL/api/v2/jobs/$JOB_ID/" | jq -r '.status')
+
+        echo "Job status: $STATUS"
+
+        if [ "$STATUS" = "successful" ]; then
+          echo "✅ Deployment succeeded"
+          exit 0
+        elif [ "$STATUS" = "failed" ]; then
+          echo "❌ Deployment failed"
+          curl -s -H "Authorization: Bearer $AWX_TOKEN" \
+            "$AWX_URL/api/v2/jobs/$JOB_ID/stdout/?format=txt"
+          exit 1
+        fi
+
+        sleep 5
+      done
+  variables:
+    AWX_URL: "https://awx.example.com"
+    AWX_TOKEN: "$AWX_API_TOKEN"  # Variable CI/CD
+    JOB_TEMPLATE_ID: "42"
+```
+
+**GitHub Actions example** :
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger AWX deployment
+        env:
+          AWX_URL: ${{ secrets.AWX_URL }}
+          AWX_TOKEN: ${{ secrets.AWX_TOKEN }}
+        run: |
+          response=$(curl -s -X POST \
+            -H "Authorization: Bearer $AWX_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$AWX_URL/api/v2/job_templates/42/launch/" \
+            -d "{\"extra_vars\": {\"git_sha\": \"$GITHUB_SHA\"}}")
+
+          job_id=$(echo $response | jq -r '.job')
+          echo "job_id=$job_id" >> $GITHUB_OUTPUT
+
+      - name: Wait for deployment
+        env:
+          AWX_URL: ${{ secrets.AWX_URL }}
+          AWX_TOKEN: ${{ secrets.AWX_TOKEN }}
+        run: |
+          job_id=${{ steps.trigger.outputs.job_id }}
+
+          while true; do
+            status=$(curl -s -H "Authorization: Bearer $AWX_TOKEN" \
+              "$AWX_URL/api/v2/jobs/$job_id/" | jq -r '.status')
+
+            if [ "$status" = "successful" ]; then
+              exit 0
+            elif [ "$status" = "failed" ]; then
+              exit 1
+            fi
+
+            sleep 10
+          done
+```
+
+## RBAC : contrôle d'accès granulaire
+
+### Rôles système
+
+**System Administrator** :
+- Accès complet à toutes les ressources
+- Peut créer/modifier/supprimer organizations
+- Gère les utilisateurs et teams
+
+**System Auditor** :
+- Lecture seule sur toutes les ressources
+- Ne peut rien modifier ou exécuter
+- Idéal pour audit et conformité
+
+**Normal User** :
+- Accès uniquement via les rôles assignés
+- Par défaut : aucun accès
+
+### Rôles par ressource
+
+**Organization** :
+- **Admin** : contrôle total sur l'organization
+- **Auditor** : lecture seule
+- **Member** : peut voir et utiliser les ressources
+- **Read** : lecture seule des détails
+
+**Inventory** :
+- **Admin** : peut tout gérer (hosts, groups, sources)
+- **Use** : peut utiliser dans les job templates
+- **Update** : peut modifier hosts et groups
+- **Adhoc** : peut lancer des commandes ad-hoc
+- **Read** : lecture seule
+
+**Job Template** :
+- **Admin** : peut modifier le template
+- **Execute** : peut lancer le job
+- **Read** : lecture seule
+
+**Credential** :
+- **Admin** : peut modifier le credential
+- **Use** : peut utiliser (sans voir le contenu)
+- **Read** : lecture seule (sans secrets)
+
+**Project** :
+- **Admin** : contrôle total
+- **Use** : peut utiliser dans les job templates
+- **Update** : peut synchroniser le projet
+- **Read** : lecture seule
+
+### Exemple de configuration RBAC
+
+**Scénario : 3 équipes** :
+
+```
+Organization: MyCompany
+
+├── Team: DevOps (admins)
+│   ├── Rôles:
+│   │   ├── Organization: Admin
+│   │   ├── All Inventories: Admin
+│   │   ├── All Job Templates: Admin
+│   │   └── All Credentials: Admin
+│   └── Membres:
+│       ├── alice (lead)
+│       └── bob
+│
+├── Team: Developers
+│   ├── Rôles:
+│   │   ├── Inventory "Dev Servers": Use
+│   │   ├── Inventory "Staging Servers": Use
+│   │   ├── Job Template "Deploy Dev": Execute
+│   │   ├── Job Template "Deploy Staging": Execute
+│   │   └── Credential "Dev SSH Key": Use
+│   └── Membres:
+│       ├── charlie
+│       ├── diana
+│       └── eve
+│
+└── Team: Auditors
+    ├── Rôles:
+    │   └── Organization: Auditor (read-only global)
+    └── Membres:
+        └── frank
+```
+
+**Workflow d'approval** :
+
+```yaml
+# Workflow: Deploy to Production
+Nodes:
+  1. Deploy Staging (any developer can launch)
+  2. Run Tests
+  3. Approval Node (requires DevOps team approval)
+  4. Deploy Production (auto-triggered after approval)
+
+# Permissions:
+Developers:
+  - Execute workflow
+  - Cannot approve
+
+DevOps Team:
+  - Approve/Deny
+  - Override approval
+```
+
+### Bonnes pratiques RBAC
+
+1. **Principe du moindre privilège** :
+   - Donner uniquement les permissions nécessaires
+   - Préférer "Use" à "Admin" quand possible
+
+2. **Séparation des environnements** :
+   ```
+   Organization: Production (strict)
+   Organization: Development (permissif)
+   ```
+
+3. **Credentials : use only** :
+   - Les utilisateurs voient qu'un credential existe
+   - Mais ne peuvent pas voir les secrets
+   - Peuvent l'utiliser dans leurs jobs
+
+4. **Audit trail** :
+   - Toutes les actions sont loggées
+   - Activity Stream : `/api/v2/activity_stream/`
+   - Qui a fait quoi et quand
+
+5. **Rotation des secrets** :
+   - Credentials gérés par System Admins uniquement
+   - Rotation régulière des SSH keys et tokens
+   - Intégration avec Vault/CyberArk recommandée
+
+## Bonnes pratiques générales
+
+### Performance
+
+1. **Fact caching** :
+   ```yaml
+   # ansible.cfg dans le projet
+   [defaults]
+   gathering = smart
+   fact_caching = jsonfile
+   fact_caching_connection = /tmp/ansible_facts
+   fact_caching_timeout = 3600
+   ```
+
+2. **Forks et parallelism** :
+   ```yaml
+   # Job Template settings
+   Forks: 50  # nombre de hosts en parallèle
+
+   # Dans ansible.cfg
+   [defaults]
+   forks = 50
+   ```
+
+3. **Inventory sources** :
+   - Update on launch : seulement si nécessaire
+   - Cache timeout : adapter selon la fréquence de changement
+
+### Sécurité
+
+1. **Isolation** :
+   - Organizations séparées par environnement
+   - Credentials : jamais dans les playbooks ou extra_vars
+   - Vault pour toutes les données sensibles
+
+2. **Audit** :
+   - System Auditor pour la conformité
+   - Logs centralisés (Splunk, ELK)
+   - Activity stream : surveillance des actions
+
+3. **Updates** :
+   - AWX : suivre les releases upstream
+   - AAP : appliquer les patches Red Hat
+   - Container images : scan de vulnérabilités
+
+### Maintenance
+
+1. **Backup** :
+   ```bash
+   # Backup PostgreSQL
+   kubectl exec -n awx awx-postgres-0 -- \
+     pg_dump -U awx awx > awx-backup-$(date +%F).sql
+
+   # Backup des projects et credentials
+   # (automatique dans AAP, manuel dans AWX)
+   ```
+
+2. **Cleanup** :
+   ```yaml
+   # Settings → System → Management Jobs
+   Enable management job: Cleanup Activity Stream
+   Keep records for: 90 days
+   Schedule: Daily at 4:00 AM
+
+   Enable management job: Cleanup Job Details
+   Keep records for: 120 days
+   ```
+
+3. **Monitoring** :
+   - Instance health : `/api/v2/ping/`
+   - Job queue : `/api/v2/jobs/?status=pending`
+   - Capacity : `/api/v2/metrics/`
+
+---
+
+## Ressources supplémentaires
+
+- **Documentation officielle** : https://docs.ansible.com/ansible-tower/
+- **AWX GitHub** : https://github.com/ansible/awx
+- **AAP Life Cycle** : https://access.redhat.com/support/policy/updates/ansible-automation-platform
+- **AWX Operator** : https://github.com/ansible/awx-operator
+- **Community** : https://forum.ansible.com/

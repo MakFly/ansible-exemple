@@ -1,0 +1,919 @@
+# Inventaire
+
+L'inventaire est le fichier qui définit les machines (hosts) sur lesquelles Ansible va exécuter des tâches. Il peut être statique (fichier INI ou YAML) ou dynamique (script ou plugin).
+
+---
+
+## Formats d'inventaire
+
+### Format INI
+
+Le format INI est le format historique d'Ansible, simple et lisible.
+
+```ini
+# Hôtes individuels
+web1.example.com
+web2.example.com
+
+# Groupe de serveurs web
+[webservers]
+web1.example.com
+web2.example.com ansible_host=192.168.1.10
+web3.example.com ansible_port=2222
+
+# Groupe de serveurs de base de données
+[dbservers]
+db1.example.com
+db2.example.com
+
+# Groupe avec plage numérique
+[appservers]
+app[01:05].example.com
+
+# Variables de groupe
+[webservers:vars]
+ansible_user=deploy
+http_port=80
+```
+
+### Format YAML
+
+Le format YAML est plus structuré et permet une meilleure organisation des données complexes.
+
+```yaml
+# inventory.yml
+all:
+  hosts:
+    mail.example.com:
+  children:
+    webservers:
+      hosts:
+        web1.example.com:
+        web2.example.com:
+          ansible_host: 192.168.1.10
+        web3.example.com:
+          ansible_port: 2222
+      vars:
+        ansible_user: deploy
+        http_port: 80
+    dbservers:
+      hosts:
+        db1.example.com:
+        db2.example.com:
+      vars:
+        ansible_user: postgres
+    appservers:
+      hosts:
+        app01.example.com:
+        app02.example.com:
+        app03.example.com:
+        app04.example.com:
+        app05.example.com:
+```
+
+---
+
+## Groupes et hiérarchie
+
+### Groupes imbriqués (children)
+
+Vous pouvez créer des hiérarchies de groupes pour organiser votre infrastructure.
+
+**Format INI :**
+
+```ini
+[webservers]
+web1.example.com
+web2.example.com
+
+[dbservers]
+db1.example.com
+db2.example.com
+
+# Groupe de production contenant webservers et dbservers
+[production:children]
+webservers
+dbservers
+
+# Groupe staging
+[staging]
+staging-web.example.com
+staging-db.example.com
+
+# Groupe datacenter contenant production et staging
+[datacenter:children]
+production
+staging
+```
+
+**Format YAML :**
+
+```yaml
+all:
+  children:
+    production:
+      children:
+        webservers:
+          hosts:
+            web1.example.com:
+            web2.example.com:
+        dbservers:
+          hosts:
+            db1.example.com:
+            db2.example.com:
+    staging:
+      hosts:
+        staging-web.example.com:
+        staging-db.example.com:
+    datacenter:
+      children:
+        production:
+        staging:
+```
+
+### Groupe `all` implicite
+
+Ansible crée automatiquement deux groupes :
+- `all` : contient tous les hôtes
+- `ungrouped` : contient les hôtes qui ne sont dans aucun groupe
+
+---
+
+## Variables d'inventaire
+
+### Variables de hôte
+
+Définissez des variables spécifiques à un hôte.
+
+**Format INI :**
+
+```ini
+[webservers]
+web1.example.com ansible_host=192.168.1.10 nginx_worker_processes=4
+web2.example.com ansible_host=192.168.1.11 nginx_worker_processes=8
+```
+
+**Format YAML :**
+
+```yaml
+webservers:
+  hosts:
+    web1.example.com:
+      ansible_host: 192.168.1.10
+      nginx_worker_processes: 4
+    web2.example.com:
+      ansible_host: 192.168.1.11
+      nginx_worker_processes: 8
+```
+
+### Variables de groupe
+
+Définissez des variables communes à tous les hôtes d'un groupe.
+
+**Format INI :**
+
+```ini
+[webservers]
+web1.example.com
+web2.example.com
+
+[webservers:vars]
+ansible_user=deploy
+ansible_python_interpreter=/usr/bin/python3
+http_port=80
+max_clients=200
+```
+
+**Format YAML :**
+
+```yaml
+webservers:
+  hosts:
+    web1.example.com:
+    web2.example.com:
+  vars:
+    ansible_user: deploy
+    ansible_python_interpreter: /usr/bin/python3
+    http_port: 80
+    max_clients: 200
+```
+
+### Variables de connexion courantes
+
+```yaml
+hosts:
+  server1.example.com:
+    # Adresse IP ou hostname réel
+    ansible_host: 192.168.1.100
+
+    # Port SSH personnalisé
+    ansible_port: 2222
+
+    # Utilisateur de connexion
+    ansible_user: admin
+
+    # Mot de passe (non recommandé, utilisez SSH keys)
+    ansible_password: secret
+
+    # Clé privée SSH
+    ansible_ssh_private_key_file: /path/to/key
+
+    # Méthode de connexion (ssh, local, docker, etc.)
+    ansible_connection: ssh
+
+    # Activation de sudo
+    ansible_become: true
+    ansible_become_method: sudo
+    ansible_become_user: root
+
+    # Interpréteur Python
+    ansible_python_interpreter: /usr/bin/python3
+```
+
+---
+
+## Inventaire dynamique
+
+L'inventaire dynamique permet de générer automatiquement la liste des hôtes depuis une source externe (cloud provider, CMDB, etc.).
+
+### Plugins d'inventaire cloud
+
+#### AWS EC2
+
+**Installation du plugin :**
+
+```bash
+pip install boto3 botocore
+```
+
+**Configuration `aws_ec2.yml` :**
+
+```yaml
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - eu-west-1
+  - us-east-1
+
+filters:
+  # Seulement les instances en cours d'exécution
+  instance-state-name: running
+
+  # Filtrer par tags
+  "tag:Environment": production
+
+keyed_groups:
+  # Créer des groupes basés sur les tags
+  - key: tags.Role
+    prefix: role
+  - key: tags.Environment
+    prefix: env
+  - key: placement.availability_zone
+    prefix: az
+
+hostnames:
+  # Utiliser l'IP publique comme hostname
+  - ip-address
+
+compose:
+  # Variables personnalisées
+  ansible_host: public_ip_address
+  ansible_user: ubuntu
+```
+
+**Utilisation :**
+
+```bash
+# Lister les hôtes
+ansible-inventory -i aws_ec2.yml --list
+
+# Exécuter un playbook
+ansible-playbook -i aws_ec2.yml playbook.yml
+```
+
+#### Google Cloud Platform (GCP)
+
+**Configuration `gcp_compute.yml` :**
+
+```yaml
+plugin: google.cloud.gcp_compute
+
+projects:
+  - my-gcp-project
+
+filters:
+  - status = RUNNING
+
+keyed_groups:
+  # Grouper par labels
+  - key: labels.role
+    prefix: role
+  - key: labels.environment
+    prefix: env
+  - key: zone
+    prefix: zone
+
+hostnames:
+  - name
+
+compose:
+  ansible_host: networkInterfaces[0].accessConfigs[0].natIP
+  ansible_user: ansible
+
+auth_kind: serviceaccount
+service_account_file: /path/to/service-account.json
+```
+
+#### Azure
+
+**Configuration `azure_rm.yml` :**
+
+```yaml
+plugin: azure.azcollection.azure_rm
+
+auth_source: auto
+
+include_vm_resource_groups:
+  - production-rg
+  - staging-rg
+
+conditional_groups:
+  linux: "'Linux' in image.offer"
+  windows: "'Windows' in image.offer"
+
+keyed_groups:
+  - key: tags.role
+    prefix: role
+  - key: tags.environment
+    prefix: env
+  - key: location
+    prefix: location
+
+hostnames:
+  - name
+
+compose:
+  ansible_host: public_ipv4_addresses[0]
+```
+
+### Script d'inventaire personnalisé
+
+Un script d'inventaire doit accepter deux arguments : `--list` et `--host <hostname>`.
+
+**Exemple `inventory.py` :**
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+
+def get_inventory():
+    """Retourne l'inventaire complet."""
+    inventory = {
+        "webservers": {
+            "hosts": ["web1.example.com", "web2.example.com"],
+            "vars": {
+                "ansible_user": "deploy",
+                "http_port": 80
+            }
+        },
+        "dbservers": {
+            "hosts": ["db1.example.com"],
+            "vars": {
+                "ansible_user": "postgres"
+            }
+        },
+        "_meta": {
+            "hostvars": {
+                "web1.example.com": {
+                    "ansible_host": "192.168.1.10",
+                    "nginx_worker_processes": 4
+                },
+                "web2.example.com": {
+                    "ansible_host": "192.168.1.11",
+                    "nginx_worker_processes": 8
+                },
+                "db1.example.com": {
+                    "ansible_host": "192.168.1.20",
+                    "postgres_version": "14"
+                }
+            }
+        }
+    }
+    return inventory
+
+def get_host(hostname):
+    """Retourne les variables pour un hôte spécifique."""
+    inventory = get_inventory()
+    return inventory["_meta"]["hostvars"].get(hostname, {})
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--list":
+        print(json.dumps(get_inventory(), indent=2))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--host":
+        print(json.dumps(get_host(sys.argv[2]), indent=2))
+    else:
+        print("Usage: inventory.py --list | --host <hostname>")
+        sys.exit(1)
+```
+
+**Rendre le script exécutable :**
+
+```bash
+chmod +x inventory.py
+ansible-inventory -i inventory.py --list
+```
+
+### Inventaire depuis une base de données
+
+**Exemple avec PostgreSQL `db_inventory.py` :**
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+import psycopg2
+
+def get_inventory_from_db():
+    """Récupère l'inventaire depuis PostgreSQL."""
+    conn = psycopg2.connect(
+        host="localhost",
+        database="cmdb",
+        user="ansible",
+        password="password"
+    )
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT hostname, group_name, ansible_host, role
+        FROM servers
+        WHERE status = 'active'
+    """)
+
+    inventory = {"_meta": {"hostvars": {}}}
+
+    for hostname, group, ansible_host, role in cur.fetchall():
+        # Créer le groupe s'il n'existe pas
+        if group not in inventory:
+            inventory[group] = {"hosts": []}
+
+        # Ajouter l'hôte au groupe
+        inventory[group]["hosts"].append(hostname)
+
+        # Ajouter les variables de l'hôte
+        inventory["_meta"]["hostvars"][hostname] = {
+            "ansible_host": ansible_host,
+            "role": role
+        }
+
+    cur.close()
+    conn.close()
+    return inventory
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--list":
+        print(json.dumps(get_inventory_from_db(), indent=2))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--host":
+        # Optimisation : retourner un dict vide car _meta est déjà rempli
+        print(json.dumps({}))
+    else:
+        print("Usage: db_inventory.py --list | --host <hostname>")
+        sys.exit(1)
+```
+
+---
+
+## Patterns de sélection
+
+Les patterns permettent de cibler des hôtes ou groupes spécifiques lors de l'exécution.
+
+### Patterns simples
+
+```bash
+# Tous les hôtes
+ansible all -m ping
+
+# Un hôte spécifique
+ansible web1.example.com -m ping
+
+# Un groupe
+ansible webservers -m ping
+
+# Plusieurs groupes (union)
+ansible webservers:dbservers -m ping
+
+# Plage numérique
+ansible web[1:3].example.com -m ping
+```
+
+### Patterns avancés
+
+```bash
+# Intersection : hôtes dans webservers ET dans production
+ansible 'webservers:&production' -m ping
+
+# Exclusion : tous les webservers SAUF ceux dans staging
+ansible 'webservers:!staging' -m ping
+
+# Combinaison complexe : production ET (webservers OU dbservers) SAUF maintenance
+ansible 'production:&(webservers:dbservers):!maintenance' -m ping
+
+# Wildcards
+ansible '*.example.com' -m ping
+ansible 'web*.example.com' -m ping
+
+# Regex (préfixe ~)
+ansible '~web[0-9]+\.example\.com' -m ping
+
+# Index dans un groupe
+ansible 'webservers[0]' -m ping      # Premier hôte
+ansible 'webservers[-1]' -m ping     # Dernier hôte
+ansible 'webservers[0:2]' -m ping    # Premiers 3 hôtes (0, 1, 2)
+```
+
+### Patterns dans les playbooks
+
+```yaml
+---
+- name: Configuration des webservers en production
+  hosts: webservers:&production
+  tasks:
+    - name: Installer Nginx
+      apt:
+        name: nginx
+        state: present
+
+- name: Configuration de tous les serveurs sauf staging
+  hosts: all:!staging
+  tasks:
+    - name: Mettre à jour les packages
+      apt:
+        upgrade: dist
+
+- name: Maintenance d'un seul serveur
+  hosts: webservers[0]
+  tasks:
+    - name: Redémarrer le service
+      service:
+        name: nginx
+        state: restarted
+```
+
+### Utilisation de `--limit`
+
+La flag `--limit` permet de restreindre l'exécution à un sous-ensemble.
+
+```bash
+# Playbook cible "all" mais exécuté uniquement sur webservers
+ansible-playbook -i inventory.yml playbook.yml --limit webservers
+
+# Combinaison avec patterns
+ansible-playbook -i inventory.yml playbook.yml --limit 'production:!maintenance'
+
+# À partir d'un fichier
+echo "web1.example.com" > hosts.txt
+echo "web2.example.com" >> hosts.txt
+ansible-playbook -i inventory.yml playbook.yml --limit @hosts.txt
+```
+
+---
+
+## Best practices d'organisation
+
+### Structure d'inventaire recommandée
+
+Pour les projets complexes, organisez vos inventaires par environnement.
+
+```
+inventory/
+├── production/
+│   ├── hosts.yml           # Inventaire principal
+│   ├── group_vars/
+│   │   ├── all.yml         # Variables communes à tous
+│   │   ├── webservers.yml  # Variables spécifiques webservers
+│   │   └── dbservers.yml   # Variables spécifiques dbservers
+│   └── host_vars/
+│       ├── web1.example.com.yml
+│       └── db1.example.com.yml
+├── staging/
+│   ├── hosts.yml
+│   ├── group_vars/
+│   │   └── all.yml
+│   └── host_vars/
+└── development/
+    ├── hosts.yml
+    └── group_vars/
+        └── all.yml
+```
+
+**`inventory/production/hosts.yml` :**
+
+```yaml
+all:
+  children:
+    webservers:
+      hosts:
+        web1.example.com:
+        web2.example.com:
+    dbservers:
+      hosts:
+        db1.example.com:
+    loadbalancers:
+      hosts:
+        lb1.example.com:
+```
+
+**`inventory/production/group_vars/all.yml` :**
+
+```yaml
+---
+# Variables communes à tous les hôtes de production
+ansible_user: deploy
+ansible_python_interpreter: /usr/bin/python3
+environment: production
+monitoring_enabled: true
+backup_enabled: true
+```
+
+**`inventory/production/group_vars/webservers.yml` :**
+
+```yaml
+---
+# Variables spécifiques aux webservers
+nginx_worker_processes: auto
+nginx_worker_connections: 1024
+ssl_enabled: true
+http_port: 80
+https_port: 443
+```
+
+**`inventory/production/host_vars/web1.example.com.yml` :**
+
+```yaml
+---
+# Variables spécifiques à web1
+ansible_host: 192.168.1.10
+nginx_worker_processes: 4
+server_id: 1
+```
+
+### Utilisation de l'inventaire structuré
+
+```bash
+# Exécuter sur production
+ansible-playbook -i inventory/production playbook.yml
+
+# Exécuter sur staging
+ansible-playbook -i inventory/staging playbook.yml
+
+# Lister les hôtes de production
+ansible-inventory -i inventory/production --list
+ansible-inventory -i inventory/production --graph
+```
+
+### Séparation des secrets
+
+**Ne jamais commiter de secrets dans l'inventaire !**
+
+Utilisez Ansible Vault pour chiffrer les fichiers sensibles.
+
+```bash
+# Créer un fichier chiffré
+ansible-vault create inventory/production/group_vars/all/vault.yml
+
+# Éditer un fichier chiffré
+ansible-vault edit inventory/production/group_vars/all/vault.yml
+
+# Chiffrer un fichier existant
+ansible-vault encrypt inventory/production/group_vars/all/secrets.yml
+```
+
+**Structure avec secrets :**
+
+```
+inventory/production/group_vars/webservers/
+├── vars.yml        # Variables publiques
+└── vault.yml       # Variables secrètes (chiffrées)
+```
+
+**`vars.yml` :**
+
+```yaml
+---
+db_host: db1.example.com
+db_port: 5432
+db_name: myapp
+```
+
+**`vault.yml` (chiffré) :**
+
+```yaml
+---
+db_password: "super_secret_password"
+api_key: "secret_api_key"
+```
+
+**Exécution avec vault :**
+
+```bash
+# Prompt pour le mot de passe
+ansible-playbook -i inventory/production playbook.yml --ask-vault-pass
+
+# Fichier de mot de passe
+ansible-playbook -i inventory/production playbook.yml --vault-password-file ~/.vault_pass
+```
+
+### Conventions de nommage
+
+```yaml
+# ✅ Bonnes pratiques
+webservers:           # Nom de groupe descriptif
+  hosts:
+    web01.prod.example.com:    # FQDN avec environnement
+      ansible_host: 10.0.1.10  # IP privée
+      role: frontend           # Rôle clair
+      tier: web                # Couche applicative
+
+# ❌ À éviter
+servers:              # Nom trop générique
+  hosts:
+    server1:          # Nom non descriptif
+      ansible_host: 192.168.1.1
+      x: y            # Variables cryptiques
+```
+
+### Documentation de l'inventaire
+
+Ajoutez un README dans votre répertoire d'inventaire.
+
+**`inventory/production/README.md` :**
+
+```markdown
+# Inventaire Production
+
+## Groupes
+
+- `webservers` : Serveurs web Nginx (2 instances)
+- `dbservers` : Serveurs PostgreSQL (1 primary, 1 replica)
+- `loadbalancers` : HAProxy (2 instances en HA)
+
+## Variables importantes
+
+- `environment` : production
+- `backup_enabled` : true
+- `monitoring_enabled` : true
+
+## Accès
+
+- Utilisateur : deploy
+- SSH Key : ~/.ssh/production_key
+- Port SSH : 22
+
+## Contacts
+
+- Responsable : ops-team@example.com
+- Escalade : emergency@example.com
+```
+
+### Validation de l'inventaire
+
+Vérifiez régulièrement votre inventaire.
+
+```bash
+# Lister tous les hôtes
+ansible-inventory -i inventory/production --list
+
+# Afficher la structure en graphe
+ansible-inventory -i inventory/production --graph
+
+# Vérifier les variables d'un hôte
+ansible-inventory -i inventory/production --host web1.example.com
+
+# Tester la connectivité
+ansible -i inventory/production all -m ping
+
+# Vérifier la syntaxe YAML
+yamllint inventory/production/hosts.yml
+```
+
+### Inventaire multi-sources
+
+Vous pouvez combiner plusieurs sources d'inventaire.
+
+```bash
+# Répertoire contenant plusieurs inventaires
+inventory/
+├── static/
+│   └── hosts.yml           # Inventaire statique
+├── aws_ec2.yml             # Inventaire dynamique AWS
+└── gcp_compute.yml         # Inventaire dynamique GCP
+
+# Ansible fusionnera automatiquement les sources
+ansible-playbook -i inventory/ playbook.yml
+```
+
+### Gestion des environnements avec un seul inventaire
+
+**Alternative avec un seul fichier :**
+
+```yaml
+all:
+  children:
+    production:
+      children:
+        prod_webservers:
+          hosts:
+            web1.prod.example.com:
+            web2.prod.example.com:
+        prod_dbservers:
+          hosts:
+            db1.prod.example.com:
+      vars:
+        environment: production
+        backup_enabled: true
+
+    staging:
+      children:
+        staging_webservers:
+          hosts:
+            web1.staging.example.com:
+        staging_dbservers:
+          hosts:
+            db1.staging.example.com:
+      vars:
+        environment: staging
+        backup_enabled: false
+```
+
+**Exécution ciblée :**
+
+```bash
+# Seulement la production
+ansible-playbook -i inventory.yml playbook.yml --limit production
+
+# Seulement staging
+ansible-playbook -i inventory.yml playbook.yml --limit staging
+```
+
+---
+
+## Debugging et dépannage
+
+### Problèmes courants
+
+**Hôte non trouvé :**
+
+```bash
+# Vérifier que l'hôte existe dans l'inventaire
+ansible-inventory -i inventory.yml --host web1.example.com
+
+# Lister tous les hôtes
+ansible-inventory -i inventory.yml --list
+```
+
+**Variables non appliquées :**
+
+```bash
+# Afficher toutes les variables d'un hôte (avec priorité)
+ansible -i inventory.yml web1.example.com -m debug -a "var=hostvars[inventory_hostname]"
+```
+
+**Problèmes de connexion :**
+
+```bash
+# Tester avec verbose
+ansible -i inventory.yml all -m ping -vvv
+
+# Vérifier les paramètres de connexion
+ansible-inventory -i inventory.yml --host web1.example.com | grep ansible_
+```
+
+### Mode verbose
+
+```bash
+# Niveau 1 : informations de base
+ansible-playbook -i inventory.yml playbook.yml -v
+
+# Niveau 2 : détails des tâches
+ansible-playbook -i inventory.yml playbook.yml -vv
+
+# Niveau 3 : informations de connexion
+ansible-playbook -i inventory.yml playbook.yml -vvv
+
+# Niveau 4 : debug complet (inclut les plugins)
+ansible-playbook -i inventory.yml playbook.yml -vvvv
+```
+
+---
+
+## Résumé
+
+L'inventaire Ansible est flexible et peut s'adapter à tout type d'infrastructure :
+
+- **Formats** : INI (simple) ou YAML (structuré)
+- **Types** : statique (fichiers) ou dynamique (plugins, scripts)
+- **Organisation** : groupes, hiérarchies, variables de groupe/hôte
+- **Patterns** : sélection précise avec opérateurs (`:`, `&`, `!`, `~`)
+- **Best practices** : structure par environnement, séparation des secrets, validation régulière
+
+Un inventaire bien organisé facilite la maintenance, améliore la sécurité et rend vos playbooks réutilisables.

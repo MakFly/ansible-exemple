@@ -1,0 +1,1695 @@
+# Performance & Best Practices
+
+Cette section couvre les techniques d'optimisation des performances Ansible et les bonnes pratiques pour maintenir des playbooks maintenables et efficaces.
+
+---
+
+## Optimisation des performances
+
+### Pipelining SSH
+
+Le pipelining SSH réduit le nombre de connexions SSH nécessaires en réutilisant une connexion existante pour exécuter plusieurs modules.
+
+**Activation dans `ansible.cfg`:**
+
+```ini
+[defaults]
+pipelining = True
+
+[ssh_connection]
+pipelining = True
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s
+```
+
+**Avantages:**
+- Réduction du temps d'exécution jusqu'à 50%
+- Moins d'ouvertures/fermetures de connexions SSH
+- Meilleure utilisation des ressources réseau
+
+**Configuration requise sur les hôtes distants:**
+
+Le pipelining nécessite que `requiretty` soit désactivé dans `/etc/sudoers`:
+
+```bash
+# Commenter ou supprimer cette ligne:
+# Defaults    requiretty
+
+# Ou ajouter une exception pour Ansible:
+Defaults:ansible !requiretty
+```
+
+**Vérification:**
+
+```bash
+ansible all -m setup -a "filter=ansible_ssh_*" --one-line
+```
+
+---
+
+### Mitogen for Ansible
+
+Mitogen est un plugin de connexion Python qui remplace le mode SSH par défaut par un système de connexion beaucoup plus rapide.
+
+**Installation:**
+
+```bash
+pip install mitogen ansible-mitogen
+
+# Ou avec un requirements.txt
+cat >> requirements.txt <<EOF
+mitogen>=0.3.3
+ansible-mitogen>=0.3.3
+EOF
+
+pip install -r requirements.txt
+```
+
+**Configuration dans `ansible.cfg`:**
+
+```ini
+[defaults]
+strategy_plugins = /usr/local/lib/python3.11/site-packages/ansible_mitogen/plugins/strategy
+strategy = mitogen_linear
+
+[ssh_connection]
+# Mitogen utilise ses propres paramètres de connexion
+```
+
+**Localisation automatique du chemin Mitogen:**
+
+```ini
+[defaults]
+strategy_plugins = ~/.local/lib/python3.11/site-packages/ansible_mitogen/plugins/strategy
+# Adapter selon votre environnement Python
+```
+
+**Gains de performance constatés:**
+- **3x à 7x plus rapide** que SSH standard
+- Réduction drastique du temps de connexion
+- Meilleure gestion de la persistance des connexions
+- Cache intelligent des modules Python
+
+**Vérification:**
+
+```bash
+ansible-playbook playbook.yml -vv | grep -i mitogen
+# Devrait afficher des messages sur l'utilisation de Mitogen
+```
+
+---
+
+### Fact Caching
+
+Le fact caching permet de mettre en cache les facts collectés pour éviter de les récupérer à chaque exécution.
+
+#### Backend jsonfile (simple, fichiers locaux)
+
+**Configuration dans `ansible.cfg`:**
+
+```ini
+[defaults]
+gathering = smart
+fact_caching = jsonfile
+fact_caching_connection = /tmp/ansible_facts_cache
+fact_caching_timeout = 86400  # 24 heures en secondes
+```
+
+**Créer le répertoire de cache:**
+
+```bash
+mkdir -p /tmp/ansible_facts_cache
+chmod 755 /tmp/ansible_facts_cache
+```
+
+#### Backend Redis (haute performance, distribué)
+
+**Installation de Redis:**
+
+```bash
+# Debian/Ubuntu
+sudo apt install redis-server python3-redis
+
+# Via pip
+pip install redis
+
+# Démarrage
+sudo systemctl start redis-server
+```
+
+**Configuration dans `ansible.cfg`:**
+
+```ini
+[defaults]
+gathering = smart
+fact_caching = redis
+fact_caching_connection = localhost:6379:0:password  # host:port:db:password
+fact_caching_timeout = 3600  # 1 heure
+fact_caching_prefix = ansible_facts_
+```
+
+#### Backend Memcached (performance intermédiaire)
+
+**Installation:**
+
+```bash
+sudo apt install memcached python3-memcache
+pip install python-memcached
+```
+
+**Configuration dans `ansible.cfg`:**
+
+```ini
+[defaults]
+gathering = smart
+fact_caching = memcached
+fact_caching_connection = ['127.0.0.1:11211']
+fact_caching_timeout = 3600
+```
+
+#### Stratégies de gathering
+
+```ini
+[defaults]
+# gathering options:
+# - implicit: collecte toujours (par défaut)
+# - explicit: collecte uniquement si gather_facts: true
+# - smart: utilise le cache si disponible et valide
+gathering = smart
+```
+
+**Exemple de playbook avec cache:**
+
+```yaml
+---
+- name: Playbook optimisé avec fact caching
+  hosts: webservers
+  gather_facts: true  # Utilisera le cache si disponible
+
+  tasks:
+    - name: Afficher le système d'exploitation
+      debug:
+        msg: "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+```
+
+**Vider le cache:**
+
+```bash
+# jsonfile
+rm -rf /tmp/ansible_facts_cache/*
+
+# Redis
+redis-cli FLUSHDB
+
+# Memcached
+echo "flush_all" | nc localhost 11211
+```
+
+---
+
+### Configuration des Forks
+
+Le paramètre `forks` contrôle le nombre d'hôtes traités en parallèle.
+
+**Configuration dans `ansible.cfg`:**
+
+```ini
+[defaults]
+forks = 20  # Valeur par défaut: 5
+```
+
+**Ou via ligne de commande:**
+
+```bash
+ansible-playbook playbook.yml --forks=50
+```
+
+**Recommandations:**
+
+| Environnement | Forks recommandés | Raison |
+|---------------|-------------------|--------|
+| Développement local | 5-10 | Limite les ressources consommées |
+| Production (10-50 serveurs) | 20-30 | Bon équilibre perf/mémoire |
+| Production (100+ serveurs) | 50-100 | Maximise le parallélisme |
+| CI/CD | 10-20 | Stabilité avant vitesse |
+
+**Impact mémoire:**
+
+Chaque fork consomme environ:
+- **50-100 MB de RAM** pour un playbook simple
+- **200-500 MB de RAM** pour des playbooks complexes avec beaucoup de variables
+
+**Calcul de la mémoire nécessaire:**
+
+```
+Mémoire nécessaire ≈ (forks × consommation par fork) + overhead Ansible
+Exemple: 50 forks × 100 MB = 5 GB + 500 MB overhead = 5.5 GB
+```
+
+**Vérification des performances:**
+
+```bash
+# Mesurer le temps d'exécution avec différents forks
+time ansible-playbook playbook.yml --forks=5
+time ansible-playbook playbook.yml --forks=20
+time ansible-playbook playbook.yml --forks=50
+```
+
+---
+
+### Stratégies d'exécution: Linear vs Free
+
+Ansible propose deux stratégies principales d'exécution des tâches.
+
+#### Stratégie Linear (par défaut)
+
+Attend que tous les hôtes terminent une tâche avant de passer à la suivante.
+
+```yaml
+---
+- name: Playbook avec stratégie linear
+  hosts: all
+  strategy: linear  # Explicite, mais c'est la valeur par défaut
+
+  tasks:
+    - name: Tâche 1
+      command: sleep 5
+
+    - name: Tâche 2
+      command: echo "Après que tous aient fini la tâche 1"
+```
+
+**Avantages:**
+- Prévisible et facile à déboguer
+- Tous les hôtes sont synchronisés
+- Idéal pour les déploiements nécessitant une coordination
+
+**Inconvénients:**
+- Les hôtes rapides attendent les hôtes lents
+- Temps d'exécution = temps du serveur le plus lent × nombre de tâches
+
+#### Stratégie Free
+
+Chaque hôte exécute les tâches aussi vite que possible, sans attendre les autres.
+
+```yaml
+---
+- name: Playbook avec stratégie free
+  hosts: all
+  strategy: free
+
+  tasks:
+    - name: Tâche 1
+      command: sleep {{ 10 | random }}
+
+    - name: Tâche 2
+      command: echo "Exécuté dès que l'hôte a fini la tâche 1"
+
+    - name: Tâche 3
+      apt:
+        name: nginx
+        state: present
+```
+
+**Avantages:**
+- Maximise le parallélisme
+- Les hôtes rapides ne sont pas ralentis
+- Idéal pour les opérations indépendantes
+
+**Inconvénients:**
+- Sortie difficile à lire (désynchronisée)
+- Coordination complexe entre hôtes
+- Debugging plus difficile
+
+**Configuration globale dans `ansible.cfg`:**
+
+```ini
+[defaults]
+strategy = free  # ou linear
+```
+
+**Comparaison de performance:**
+
+```yaml
+---
+# Test de performance: 10 serveurs avec des vitesses variables
+- name: Test linear vs free
+  hosts: test_servers
+  strategy: "{{ lookup('env', 'ANSIBLE_STRATEGY') | default('linear') }}"
+
+  tasks:
+    - name: Simulation de tâche variable
+      shell: sleep {{ 5 + (ansible_hostname | hash | int % 10) }}
+
+# Exécuter avec:
+# ANSIBLE_STRATEGY=linear ansible-playbook test.yml
+# ANSIBLE_STRATEGY=free ansible-playbook test.yml
+```
+
+---
+
+### Optimisation de la collecte des Facts
+
+#### Désactiver la collecte quand elle n'est pas nécessaire
+
+```yaml
+---
+- name: Playbook sans facts
+  hosts: all
+  gather_facts: false  # Économise 2-5 secondes par hôte
+
+  tasks:
+    - name: Tâche simple sans besoin de facts
+      ping:
+```
+
+**Gain de temps:** 2-5 secondes par hôte (selon la latence réseau).
+
+#### Limiter la collecte avec gather_subset
+
+```yaml
+---
+- name: Collecte sélective des facts
+  hosts: all
+  gather_facts: true
+  gather_subset:
+    - '!all'          # Désactive tout
+    - '!min'          # Désactive même le minimum
+    - network         # Active uniquement les facts réseau
+    - virtual         # Active les facts de virtualisation
+
+  tasks:
+    - name: Afficher l'IP
+      debug:
+        msg: "IP: {{ ansible_default_ipv4.address }}"
+```
+
+**Subsets disponibles:**
+
+| Subset | Description | Temps collecte |
+|--------|-------------|----------------|
+| `all` | Tous les facts (par défaut) | ~3-5s |
+| `min` | Facts minimaux (hostname, OS) | ~0.5s |
+| `network` | Interfaces, IP, routes | ~1s |
+| `hardware` | CPU, RAM, disques | ~1s |
+| `virtual` | Type de virtualisation | ~0.3s |
+| `ohai` | Facts Ohai (si Chef installé) | ~2s |
+| `facter` | Facts Facter (si Puppet installé) | ~2s |
+
+**Exemples de combinaisons:**
+
+```yaml
+# Uniquement réseau et OS
+gather_subset:
+  - '!all'
+  - '!any'
+  - network
+  - min
+
+# Tout sauf hardware
+gather_subset:
+  - all
+  - '!hardware'
+
+# Minimum vital pour la plupart des playbooks
+gather_subset:
+  - '!all'
+  - min
+  - network
+```
+
+**Vérifier les facts collectés:**
+
+```bash
+ansible hostname -m setup -a "filter=ansible_*" | grep ansible_
+```
+
+---
+
+### Actions asynchrones pour les tâches longues
+
+Les tâches asynchrones permettent de lancer une commande et de continuer sans attendre, puis de vérifier son statut plus tard.
+
+#### Syntaxe de base
+
+```yaml
+---
+- name: Exemple d'actions asynchrones
+  hosts: all
+
+  tasks:
+    - name: Lancer une tâche longue en arrière-plan
+      command: /usr/bin/long_running_script.sh
+      async: 3600          # Timeout maximum: 1 heure
+      poll: 0              # 0 = fire-and-forget, >0 = polling interval
+      register: long_task
+
+    - name: Faire autre chose pendant ce temps
+      apt:
+        name: nginx
+        state: present
+
+    - name: Vérifier le statut de la tâche longue
+      async_status:
+        jid: "{{ long_task.ansible_job_id }}"
+      register: job_result
+      until: job_result.finished
+      retries: 30
+      delay: 60  # Vérifier toutes les 60 secondes
+```
+
+#### Exemple pratique: Mise à jour système
+
+```yaml
+---
+- name: Mise à jour asynchrone de plusieurs serveurs
+  hosts: all
+
+  tasks:
+    - name: Lancer apt upgrade en arrière-plan
+      apt:
+        upgrade: dist
+        update_cache: yes
+      async: 1800  # 30 minutes max
+      poll: 0
+      register: apt_upgrade
+
+    - name: Configurer les services pendant la mise à jour
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+      notify: reload nginx
+
+    - name: Attendre la fin de la mise à jour
+      async_status:
+        jid: "{{ apt_upgrade.ansible_job_id }}"
+      register: upgrade_result
+      until: upgrade_result.finished
+      retries: 60
+      delay: 30
+
+    - name: Afficher le résultat
+      debug:
+        var: upgrade_result.stdout_lines
+```
+
+#### Fire-and-forget (poll: 0)
+
+```yaml
+- name: Lancer sans attendre
+  command: /opt/backup/long_backup.sh
+  async: 7200  # 2 heures
+  poll: 0
+  # La tâche continue en arrière-plan, Ansible ne vérifie pas le résultat
+```
+
+#### Polling actif (poll: > 0)
+
+```yaml
+- name: Lancer avec vérification automatique
+  command: /opt/maintenance/cleanup.sh
+  async: 600   # 10 minutes max
+  poll: 15     # Vérifier toutes les 15 secondes
+  # Ansible attend automatiquement et vérifie régulièrement
+```
+
+#### Lancer plusieurs tâches asynchrones en parallèle
+
+```yaml
+---
+- name: Parallélisation de tâches lourdes
+  hosts: databases
+
+  tasks:
+    - name: Lancer le backup de chaque base
+      shell: "mysqldump {{ item }} > /backup/{{ item }}.sql"
+      async: 3600
+      poll: 0
+      loop:
+        - database1
+        - database2
+        - database3
+      register: backup_jobs
+
+    - name: Attendre tous les backups
+      async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ backup_jobs.results }}"
+      register: backup_results
+      until: backup_results.finished
+      retries: 120
+      delay: 30
+```
+
+---
+
+## Structure de projet recommandée
+
+Une arborescence claire et cohérente facilite la maintenance et la collaboration.
+
+### Arborescence complète
+
+```
+ansible-project/
+├── ansible.cfg                 # Configuration Ansible du projet
+├── .ansible-lint              # Configuration du linter
+├── requirements.txt           # Dépendances Python (mitogen, etc.)
+├── requirements.yml           # Collections et rôles Ansible
+├── inventory/
+│   ├── production/
+│   │   ├── hosts.ini         # Inventaire production
+│   │   └── group_vars/
+│   │       ├── all.yml       # Variables pour tous les groupes
+│   │       ├── webservers.yml
+│   │       └── databases.yml
+│   └── staging/
+│       ├── hosts.ini
+│       └── group_vars/
+│           └── all.yml
+│
+├── group_vars/               # Variables globales par groupe
+│   ├── all.yml              # Variables pour tous les environnements
+│   ├── webservers.yml
+│   └── databases.yml
+│
+├── host_vars/               # Variables spécifiques par hôte
+│   ├── web01.example.com.yml
+│   └── db01.example.com.yml
+│
+├── roles/                   # Rôles personnalisés
+│   ├── common/
+│   │   ├── tasks/
+│   │   │   └── main.yml
+│   │   ├── handlers/
+│   │   │   └── main.yml
+│   │   ├── templates/
+│   │   ├── files/
+│   │   ├── vars/
+│   │   │   └── main.yml
+│   │   ├── defaults/
+│   │   │   └── main.yml
+│   │   ├── meta/
+│   │   │   └── main.yml
+│   │   └── README.md
+│   │
+│   ├── webserver/
+│   │   └── ...
+│   └── database/
+│       └── ...
+│
+├── playbooks/              # Playbooks organisés par fonction
+│   ├── site.yml           # Playbook master
+│   ├── webservers.yml     # Déploiement web
+│   ├── databases.yml      # Gestion BDD
+│   ├── deploy.yml         # Déploiement d'application
+│   └── maintenance/
+│       ├── backup.yml
+│       ├── update.yml
+│       └── security-patch.yml
+│
+├── library/               # Modules personnalisés
+│   └── custom_module.py
+│
+├── filter_plugins/        # Filtres Jinja2 personnalisés
+│   └── custom_filters.py
+│
+├── callback_plugins/      # Plugins de callback (profiling, etc.)
+│   └── custom_callback.py
+│
+├── vars/                  # Variables partagées
+│   ├── common.yml
+│   └── secrets.yml       # (chiffré avec ansible-vault)
+│
+├── files/                 # Fichiers statiques
+│   ├── ssl/
+│   └── scripts/
+│
+├── templates/             # Templates Jinja2 globaux
+│   └── common-config.j2
+│
+├── logs/                  # Logs d'exécution (gitignored)
+│   └── .gitkeep
+│
+├── .vault_pass           # Mot de passe Vault (gitignored!)
+├── .gitignore
+└── README.md             # Documentation du projet
+```
+
+### Exemple de `.gitignore`
+
+```gitignore
+# Ansible
+*.retry
+.ansible/
+logs/
+*.log
+
+# Vault password
+.vault_pass
+*vault_pass*
+
+# Facts cache
+/tmp/ansible_facts_cache/
+
+# Python
+*.pyc
+__pycache__/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+```
+
+### Exemple de `ansible.cfg` complet
+
+```ini
+[defaults]
+# Inventaire
+inventory = ./inventory/production/hosts.ini
+# inventory = ./inventory/staging/hosts.ini  # Décommenter pour staging
+
+# Rôles
+roles_path = ./roles:~/.ansible/roles:/usr/share/ansible/roles
+
+# Collections
+collections_paths = ./collections:~/.ansible/collections
+
+# Performance
+forks = 20
+gathering = smart
+fact_caching = jsonfile
+fact_caching_connection = /tmp/ansible_facts_cache
+fact_caching_timeout = 86400
+
+# Stratégie Mitogen (commenter si non installé)
+# strategy_plugins = ~/.local/lib/python3.11/site-packages/ansible_mitogen/plugins/strategy
+# strategy = mitogen_linear
+
+# SSH
+pipelining = True
+host_key_checking = False
+timeout = 30
+
+# Logs
+log_path = ./logs/ansible.log
+
+# Vault
+vault_password_file = ./.vault_pass
+
+# Callback plugins pour profiling
+callback_whitelist = timer, profile_tasks, profile_roles
+
+# Affichage
+stdout_callback = yaml
+bin_ansible_callbacks = True
+display_skipped_hosts = False
+display_ok_hosts = True
+
+# Autres
+retry_files_enabled = False
+deprecation_warnings = False
+interpreter_python = auto_silent
+
+[inventory]
+enable_plugins = ini, yaml, host_list, auto
+
+[privilege_escalation]
+become = False
+become_method = sudo
+become_user = root
+become_ask_pass = False
+
+[ssh_connection]
+pipelining = True
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o UserKnownHostsFile=/dev/null
+control_path = /tmp/ansible-ssh-%%h-%%p-%%r
+```
+
+---
+
+## Naming Conventions
+
+### Noms de tâches
+
+**Principes:**
+- **Commencer par un verbe d'action** (Install, Configure, Copy, Ensure, etc.)
+- **Être descriptif et spécifique**
+- **Utiliser le présent de l'impératif**
+- **Éviter les abréviations**
+
+**Exemples:**
+
+```yaml
+# ✅ BON
+- name: Install Nginx web server
+- name: Configure PostgreSQL authentication
+- name: Copy SSL certificates to remote host
+- name: Ensure firewall allows HTTP and HTTPS
+- name: Restart Apache service if config changed
+
+# ❌ MAUVAIS
+- name: nginx install
+- name: cfg postgres
+- name: copy file
+- name: firewall
+- name: Restart svc
+```
+
+**Conventions par type de tâche:**
+
+```yaml
+# Installation de paquets
+- name: Install required packages (git, curl, wget)
+
+# Configuration
+- name: Configure Nginx virtual host for example.com
+
+# Services
+- name: Start and enable Docker service
+- name: Restart Nginx to apply configuration changes
+
+# Fichiers
+- name: Copy application configuration to /etc/app/config.yml
+- name: Create application log directory
+
+# Vérifications
+- name: Verify that database port 5432 is open
+- name: Ensure user 'deploy' exists with correct permissions
+
+# Nettoyage
+- name: Remove old backup files older than 30 days
+- name: Clean up temporary files in /tmp
+```
+
+### Noms de variables
+
+**Principes:**
+- **snake_case** obligatoire (jamais camelCase ou PascalCase)
+- **Préfixer avec le nom du rôle** pour éviter les conflits
+- **Être descriptif et explicite**
+- **Utiliser des noms en anglais** pour la cohérence communautaire
+
+**Structure recommandée:**
+
+```yaml
+# Format: role_category_name
+nginx_version: "1.24"
+nginx_user: "www-data"
+nginx_worker_processes: "auto"
+nginx_pid_file: "/var/run/nginx.pid"
+
+# Pour des structures complexes
+nginx_vhosts:
+  - name: "example.com"
+    port: 80
+    root: "/var/www/example"
+
+# Booleans: utiliser des préfixes is_, has_, enable_
+nginx_enable_ssl: true
+nginx_has_custom_config: false
+postgresql_is_primary: true
+
+# Listes: utiliser le pluriel
+nginx_allowed_ips:
+  - "192.168.1.0/24"
+  - "10.0.0.0/8"
+
+# Chemins: suffixer avec _path ou _dir
+app_install_dir: "/opt/myapp"
+app_config_path: "/etc/myapp/config.yml"
+app_log_dir: "/var/log/myapp"
+```
+
+**Exemples par rôle:**
+
+```yaml
+# Rôle: webserver
+webserver_package: "nginx"
+webserver_port: 80
+webserver_ssl_port: 443
+webserver_document_root: "/var/www/html"
+webserver_enable_ssl: true
+webserver_ssl_cert_path: "/etc/ssl/certs/server.crt"
+webserver_ssl_key_path: "/etc/ssl/private/server.key"
+
+# Rôle: database
+database_engine: "postgresql"
+database_version: "15"
+database_port: 5432
+database_name: "production_db"
+database_user: "app_user"
+database_password: "{{ vault_database_password }}"  # Depuis Vault
+database_max_connections: 100
+database_backup_enabled: true
+database_backup_schedule: "0 2 * * *"
+
+# Rôle: application
+app_name: "my_application"
+app_version: "2.3.1"
+app_user: "appuser"
+app_group: "appgroup"
+app_install_dir: "/opt/{{ app_name }}"
+app_config_dir: "/etc/{{ app_name }}"
+app_log_dir: "/var/log/{{ app_name }}"
+app_enable_monitoring: true
+```
+
+**Variables sensibles (avec Vault):**
+
+```yaml
+# Préfixer avec vault_ pour identifier facilement
+vault_db_root_password: "secret123"
+vault_api_key: "abc123xyz"
+vault_ssl_private_key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+```
+
+### Noms de rôles
+
+**Principes:**
+- **Utiliser snake_case ou kebab-case** (éviter les espaces)
+- **Être descriptif et concis**
+- **Un rôle = une responsabilité** (principe UNIX)
+
+**Exemples:**
+
+```
+# ✅ BON
+roles/
+├── common/              # Configuration commune à tous les serveurs
+├── webserver/           # Installation et config serveur web
+├── database/            # Installation et config BDD
+├── ssl_certificates/    # Gestion des certificats SSL
+├── firewall/            # Configuration firewall
+├── monitoring/          # Monitoring (Prometheus, etc.)
+├── backup/              # Scripts de backup
+└── docker/              # Installation Docker
+
+# ❌ MAUVAIS
+roles/
+├── common stuff/        # Espace dans le nom
+├── WebServer/           # PascalCase
+├── db-and-cache/        # Trop de responsabilités
+└── misc/                # Trop vague
+```
+
+**Organisation interne d'un rôle:**
+
+```yaml
+# roles/webserver/meta/main.yml
+---
+galaxy_info:
+  role_name: webserver
+  author: "Your Name"
+  description: "Install and configure Nginx web server"
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+  galaxy_tags:
+    - nginx
+    - webserver
+    - web
+
+dependencies:
+  - role: firewall
+    vars:
+      firewall_allow_ports:
+        - 80
+        - 443
+```
+
+---
+
+## Idempotence
+
+L'idempotence est un principe fondamental d'Ansible: **exécuter un playbook plusieurs fois doit produire le même résultat**.
+
+### Principes de base
+
+**Une tâche idempotente:**
+- Vérifie l'état actuel avant de modifier
+- Ne fait rien si l'état désiré est déjà atteint
+- Produit le même résultat à chaque exécution
+
+```yaml
+# ✅ IDEMPOTENT
+- name: Ensure Nginx is installed
+  apt:
+    name: nginx
+    state: present
+  # Installe uniquement si pas déjà installé
+
+# ✅ IDEMPOTENT
+- name: Ensure user 'deploy' exists
+  user:
+    name: deploy
+    state: present
+    shell: /bin/bash
+  # Crée uniquement si n'existe pas
+
+# ❌ NON IDEMPOTENT
+- name: Add line to config
+  shell: echo "server_name example.com;" >> /etc/nginx/nginx.conf
+  # Ajoute à chaque exécution!
+
+# ✅ IDEMPOTENT (correction)
+- name: Ensure server_name is in config
+  lineinfile:
+    path: /etc/nginx/nginx.conf
+    line: "server_name example.com;"
+    state: present
+  # Ajoute uniquement si absent
+```
+
+### Pièges courants et solutions
+
+#### 1. Commandes shell/command
+
+**Problème:** `shell` et `command` ne sont jamais idempotents par défaut.
+
+```yaml
+# ❌ NON IDEMPOTENT
+- name: Create directory
+  command: mkdir /opt/myapp
+
+# ✅ IDEMPOTENT
+- name: Ensure directory exists
+  file:
+    path: /opt/myapp
+    state: directory
+    mode: '0755'
+```
+
+**Solution avec `creates` ou `removes`:**
+
+```yaml
+# ✅ IDEMPOTENT avec creates
+- name: Extract archive
+  command: tar -xzf /tmp/app.tar.gz -C /opt/
+  args:
+    creates: /opt/app/bin/app  # Exécute uniquement si ce fichier n'existe pas
+
+# ✅ IDEMPOTENT avec removes
+- name: Clean old logs
+  command: find /var/log -name "*.log" -mtime +30 -delete
+  args:
+    removes: /var/log/old.log  # Exécute uniquement si ce fichier existe
+```
+
+#### 2. Modifications de fichiers
+
+**Problème:** Utiliser `shell` avec `echo` ou `sed` casse l'idempotence.
+
+```yaml
+# ❌ NON IDEMPOTENT
+- name: Add config line
+  shell: echo "Port 2222" >> /etc/ssh/sshd_config
+
+# ✅ IDEMPOTENT
+- name: Ensure SSH port is 2222
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?Port '
+    line: 'Port 2222'
+    state: present
+```
+
+**Modules préférés:**
+- `lineinfile`: Ajouter/modifier une ligne
+- `blockinfile`: Ajouter/modifier un bloc de lignes
+- `replace`: Remplacer du texte avec regex
+- `template`: Générer un fichier complet depuis un template
+
+#### 3. Scripts personnalisés
+
+**Problème:** Scripts externes souvent non idempotents.
+
+```yaml
+# ❌ NON IDEMPOTENT
+- name: Run setup script
+  script: /tmp/setup.sh
+
+# ✅ IDEMPOTENT avec changed_when
+- name: Run setup script only if needed
+  script: /tmp/setup.sh
+  register: setup_result
+  changed_when: "'Configuration updated' in setup_result.stdout"
+  failed_when: setup_result.rc != 0 and setup_result.rc != 2  # 2 = déjà configuré
+```
+
+**Technique: flag file pour éviter ré-exécution**
+
+```yaml
+- name: Run one-time initialization script
+  script: /tmp/init.sh
+  args:
+    creates: /var/lib/myapp/.initialized
+
+- name: Create initialization flag
+  file:
+    path: /var/lib/myapp/.initialized
+    state: touch
+  when: setup_result is changed
+```
+
+#### 4. Commandes de téléchargement
+
+```yaml
+# ❌ NON IDEMPOTENT
+- name: Download file
+  command: wget https://example.com/file.tar.gz -O /tmp/file.tar.gz
+
+# ✅ IDEMPOTENT
+- name: Download file if not present
+  get_url:
+    url: https://example.com/file.tar.gz
+    dest: /tmp/file.tar.gz
+    checksum: sha256:abc123...  # Optionnel mais recommandé
+```
+
+#### 5. Gestion des services
+
+```yaml
+# ✅ IDEMPOTENT
+- name: Ensure Nginx is started and enabled
+  service:
+    name: nginx
+    state: started   # started (pas restarted)
+    enabled: true
+  # Démarre uniquement si arrêté
+
+# ✅ IDEMPOTENT avec notification
+- name: Copy Nginx config
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+  notify: restart nginx
+  # Restart uniquement si config modifiée
+```
+
+### Tester l'idempotence
+
+**Exécuter deux fois le playbook:**
+
+```bash
+# Première exécution
+ansible-playbook playbook.yml
+
+# Deuxième exécution: doit afficher 0 changed
+ansible-playbook playbook.yml
+```
+
+**Résultat attendu (2ème exécution):**
+
+```
+PLAY RECAP *************************************************
+webserver01    : ok=10   changed=0   unreachable=0   failed=0
+```
+
+**Si `changed > 0` sur la 2ème exécution:** Il y a un problème d'idempotence.
+
+**Déboguer avec `--check` et `--diff`:**
+
+```bash
+# Mode check: ne fait rien, montre ce qui changerait
+ansible-playbook playbook.yml --check
+
+# Avec diff: montre les modifications prévues
+ansible-playbook playbook.yml --check --diff
+```
+
+### Checklist idempotence
+
+- [ ] Utiliser les modules natifs Ansible au lieu de `shell`/`command`
+- [ ] Toujours définir `state` explicitement (present, absent, started, etc.)
+- [ ] Utiliser `creates` ou `removes` pour `command`/`shell`
+- [ ] Définir `changed_when` et `failed_when` pour les scripts personnalisés
+- [ ] Tester avec deux exécutions successives
+- [ ] Utiliser `--check --diff` pour vérifier avant exécution
+- [ ] Préférer `template` à `lineinfile` pour les fichiers complexes
+- [ ] Utiliser les handlers pour les actions de notification (restart, reload)
+
+---
+
+## Ansible Pull Mode
+
+Le mode Pull inverse la logique: les serveurs récupèrent et exécutent eux-mêmes leur configuration depuis un dépôt Git.
+
+### Comparaison Push vs Pull
+
+| Aspect | Push (défaut) | Pull |
+|--------|---------------|------|
+| **Initiative** | Controller vers hôtes | Hôtes vers Git |
+| **Architecture** | Centralisée | Décentralisée |
+| **Scalabilité** | Limitée par forks | Illimitée (chaque hôte indépendant) |
+| **Sécurité** | Controller a accès SSH à tout | Pas d'accès SSH nécessaire |
+| **Cas d'usage** | Infrastructure < 1000 serveurs | Infrastructure massive, cloud auto-scaling |
+
+### Installation et configuration
+
+**Sur chaque hôte distant:**
+
+```bash
+# Installation Ansible
+sudo apt update
+sudo apt install ansible git -y
+
+# Vérification
+ansible --version
+```
+
+**Configuration pull dans `/etc/ansible/pull.yml`:**
+
+```yaml
+---
+# Playbook exécuté par ansible-pull
+- name: Pull configuration from Git
+  hosts: localhost
+  connection: local
+  become: true
+
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install common packages
+      apt:
+        name:
+          - vim
+          - htop
+          - curl
+        state: present
+
+    - name: Ensure SSH key for git is present
+      copy:
+        src: /root/.ssh/id_rsa
+        dest: /root/.ssh/id_rsa
+        mode: '0600'
+
+    - name: Apply role based on hostname
+      include_role:
+        name: "{{ ansible_hostname | regex_replace('^(\\w+).*', '\\1') }}"
+      # web01 -> role: web
+      # db02 -> role: db
+```
+
+### Exécution manuelle
+
+```bash
+# Syntaxe de base
+ansible-pull -U https://github.com/user/ansible-repo.git
+
+# Avec options
+ansible-pull \
+  -U https://github.com/user/ansible-repo.git \
+  -C main \                    # Branche Git
+  -i inventory/pull.ini \      # Inventaire (optionnel)
+  -d /opt/ansible-pull \       # Répertoire de travail
+  playbooks/site.yml           # Playbook à exécuter (optionnel)
+```
+
+**Avec authentification Git (SSH):**
+
+```bash
+ansible-pull \
+  -U git@github.com:user/ansible-repo.git \
+  --private-key=/root/.ssh/id_rsa \
+  -C production
+```
+
+### Automatisation avec cron
+
+**Créer une tâche cron:**
+
+```bash
+# Éditer le crontab root
+sudo crontab -e
+
+# Exécuter toutes les 30 minutes
+*/30 * * * * /usr/bin/ansible-pull -U https://github.com/user/ansible-repo.git -d /opt/ansible-pull >> /var/log/ansible-pull.log 2>&1
+
+# Exécuter toutes les 10 minutes avec vérification
+*/10 * * * * /usr/bin/flock -n /var/lock/ansible-pull.lock /usr/bin/ansible-pull -U git@github.com:user/ansible.git -C main >> /var/log/ansible-pull.log 2>&1
+```
+
+**Script wrapper `/usr/local/bin/ansible-pull-wrapper.sh`:**
+
+```bash
+#!/bin/bash
+set -e
+
+REPO_URL="git@github.com:mycompany/ansible-infra.git"
+BRANCH="main"
+WORK_DIR="/opt/ansible-pull"
+LOG_FILE="/var/log/ansible-pull.log"
+LOCK_FILE="/var/lock/ansible-pull.lock"
+
+# Lock pour éviter les exécutions concurrentes
+exec 200>$LOCK_FILE
+flock -n 200 || { echo "Another instance is running"; exit 1; }
+
+# Logging avec timestamp
+exec > >(ts '[%Y-%m-%d %H:%M:%S]' | tee -a $LOG_FILE)
+exec 2>&1
+
+echo "Starting ansible-pull..."
+
+# Exécution
+ansible-pull \
+  -U $REPO_URL \
+  -C $BRANCH \
+  -d $WORK_DIR \
+  --purge \
+  --force \
+  playbooks/site.yml
+
+echo "ansible-pull completed successfully"
+```
+
+**Rendre exécutable et programmer:**
+
+```bash
+chmod +x /usr/local/bin/ansible-pull-wrapper.sh
+
+# Crontab
+*/15 * * * * /usr/local/bin/ansible-pull-wrapper.sh
+```
+
+### Systemd timer (alternative moderne à cron)
+
+**Fichier `/etc/systemd/system/ansible-pull.service`:**
+
+```ini
+[Unit]
+Description=Ansible Pull
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ansible-pull -U git@github.com:user/ansible.git -C main -d /opt/ansible-pull
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Fichier `/etc/systemd/system/ansible-pull.timer`:**
+
+```ini
+[Unit]
+Description=Run ansible-pull every 15 minutes
+Requires=ansible-pull.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=ansible-pull.service
+
+[Install]
+WantedBy=timers.target
+```
+
+**Activation:**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable ansible-pull.timer
+sudo systemctl start ansible-pull.timer
+
+# Vérifier le statut
+sudo systemctl status ansible-pull.timer
+sudo systemctl list-timers ansible-pull.timer
+```
+
+### Sécurité en mode pull
+
+**1. Authentification Git (SSH key):**
+
+```bash
+# Générer une clé dédiée sur chaque serveur
+ssh-keygen -t ed25519 -C "ansible-pull@$(hostname)" -f /root/.ssh/ansible-pull
+chmod 600 /root/.ssh/ansible-pull
+
+# Ajouter la clé publique à GitHub/GitLab (read-only)
+cat /root/.ssh/ansible-pull.pub
+```
+
+**2. Chiffrement Vault:**
+
+```yaml
+# Les secrets dans le repo doivent être chiffrés
+ansible-vault encrypt group_vars/all/vault.yml
+
+# Le mot de passe Vault doit être présent sur chaque hôte
+echo "my_vault_password" > /etc/ansible/vault_pass
+chmod 600 /etc/ansible/vault_pass
+
+# ansible-pull avec vault
+ansible-pull -U git@github.com:user/ansible.git --vault-password-file=/etc/ansible/vault_pass
+```
+
+**3. Limiter les permissions:**
+
+```bash
+# Le répertoire de travail doit être protégé
+mkdir -p /opt/ansible-pull
+chmod 700 /opt/ansible-pull
+chown root:root /opt/ansible-pull
+```
+
+---
+
+## Profiling et analyse de performance
+
+Ansible propose plusieurs callback plugins pour analyser les performances des playbooks.
+
+### Plugin: timer
+
+Affiche le temps total d'exécution du playbook.
+
+**Activation dans `ansible.cfg`:**
+
+```ini
+[defaults]
+callbacks_enabled = timer
+```
+
+**Sortie:**
+
+```
+Playbook run took 0 days, 0 hours, 3 minutes, 45 seconds
+```
+
+### Plugin: profile_tasks
+
+Affiche le temps d'exécution de chaque tâche, triées par durée.
+
+**Activation dans `ansible.cfg`:**
+
+```ini
+[defaults]
+callbacks_enabled = profile_tasks
+```
+
+**Sortie:**
+
+```
+PLAY RECAP *************************************************
+Monday 04 February 2026  10:23:45 +0100 (0:00:02.345)       0:03:45.123 ******
+
+Install PostgreSQL ----------------------------------------- 120.45s
+Configure Nginx -------------------------------------------- 65.23s
+Update APT cache ------------------------------------------- 45.12s
+Copy SSL certificates -------------------------------------- 12.34s
+Restart services -------------------------------------------- 5.67s
+```
+
+### Plugin: profile_roles
+
+Affiche le temps d'exécution de chaque rôle.
+
+**Activation dans `ansible.cfg`:**
+
+```ini
+[defaults]
+callbacks_enabled = profile_roles
+```
+
+**Sortie:**
+
+```
+Monday 04 February 2026  10:23:45 +0100 (0:00:02.345)       0:03:45.123 ******
+
+database role -------------------------------------------- 180.45s
+webserver role ------------------------------------------- 125.23s
+common role ----------------------------------------------- 39.12s
+```
+
+### Activer plusieurs plugins simultanément
+
+```ini
+[defaults]
+callbacks_enabled = timer, profile_tasks, profile_roles
+```
+
+### Plugin personnalisé: Profiling détaillé
+
+**Créer `/callback_plugins/detailed_profiling.py`:**
+
+```python
+# (C) 2024, Your Name
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+
+from ansible.plugins.callback import CallbackBase
+from datetime import datetime
+import time
+
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = 'aggregate'
+    CALLBACK_NAME = 'detailed_profiling'
+
+    def __init__(self):
+        super(CallbackModule, self).__init__()
+        self.task_start_time = {}
+        self.play_start_time = None
+
+    def v2_playbook_on_play_start(self, play):
+        self.play_start_time = time.time()
+        name = play.get_name().strip()
+        self._display.display(f"PLAY START: {name}")
+
+    def v2_playbook_on_task_start(self, task, is_conditional):
+        self.task_start_time[task._uuid] = time.time()
+
+    def v2_runner_on_ok(self, result):
+        task = result._task
+        duration = time.time() - self.task_start_time.get(task._uuid, time.time())
+        self._display.display(f"OK [{duration:.2f}s]: {task.get_name()}")
+
+    def v2_playbook_on_stats(self, stats):
+        total_time = time.time() - self.play_start_time
+        self._display.display(f"\n{'='*60}")
+        self._display.display(f"Total execution time: {total_time:.2f}s")
+```
+
+**Utilisation:**
+
+```ini
+[defaults]
+callback_plugins = ./callback_plugins
+callbacks_enabled = detailed_profiling
+```
+
+### Analyse avec ansible-playbook --verbose
+
+```bash
+# Niveau 1: Informations de base
+ansible-playbook playbook.yml -v
+
+# Niveau 2: Affiche les modules et variables
+ansible-playbook playbook.yml -vv
+
+# Niveau 3: Affiche les connexions SSH
+ansible-playbook playbook.yml -vvv
+
+# Niveau 4: Debug complet (très verbeux)
+ansible-playbook playbook.yml -vvvv
+```
+
+### Exportation des métriques au format JSON
+
+**Plugin callback json:**
+
+```bash
+ANSIBLE_STDOUT_CALLBACK=json ansible-playbook playbook.yml > results.json
+```
+
+**Analyser avec `jq`:**
+
+```bash
+# Extraire les durées des tâches
+jq '.plays[].tasks[] | {name: .task.name, duration: .task.duration}' results.json
+
+# Trouver les 10 tâches les plus lentes
+jq '[.plays[].tasks[] | {name: .task.name, duration: .task.duration.end - .task.duration.start}] | sort_by(.duration) | reverse | .[0:10]' results.json
+```
+
+### Outils externes de profiling
+
+**1. ARA (Ansible Run Analysis):**
+
+```bash
+# Installation
+pip install ara
+
+# Configuration dans ansible.cfg
+[defaults]
+callbacks_enabled = ara_default
+
+# Lancer playbook
+ansible-playbook playbook.yml
+
+# Voir les résultats dans l'interface web
+ara-manage runserver
+# Ouvrir http://127.0.0.1:8000
+```
+
+**2. Ansible Tower / AWX:**
+
+Interface graphique complète avec:
+- Historique d'exécution
+- Graphiques de performance
+- Alertes et notifications
+- Planification de jobs
+
+---
+
+## Checklist des Best Practices
+
+### Performance
+
+- [ ] Pipelining SSH activé (`pipelining = True`)
+- [ ] Mitogen installé et configuré (si possible)
+- [ ] Fact caching activé avec backend adapté (jsonfile, redis, memcached)
+- [ ] `gathering = smart` configuré
+- [ ] Forks augmentés selon la taille de l'infra (20-100)
+- [ ] `gather_facts: false` dans les playbooks qui n'en ont pas besoin
+- [ ] `gather_subset` utilisé pour limiter les facts collectés
+- [ ] Actions asynchrones pour les tâches longues (> 30s)
+- [ ] Stratégie `free` pour les tâches indépendantes
+- [ ] Profiling activé (`profile_tasks`, `profile_roles`, `timer`)
+
+### Structure et organisation
+
+- [ ] Arborescence de projet respectée (roles/, playbooks/, inventory/)
+- [ ] Un rôle = une responsabilité (principe UNIX)
+- [ ] Variables organisées (group_vars, host_vars, defaults, vars)
+- [ ] Secrets chiffrés avec `ansible-vault`
+- [ ] `.gitignore` configuré (logs, cache, .vault_pass)
+- [ ] `ansible.cfg` versionné avec le projet
+- [ ] `requirements.yml` pour les dépendances externes
+- [ ] `README.md` documentant la structure
+
+### Naming conventions
+
+- [ ] Tâches: Verbe d'action + description (`Install Nginx web server`)
+- [ ] Variables: `snake_case` avec préfixe rôle (`nginx_port`, `db_user`)
+- [ ] Rôles: `snake_case` ou `kebab-case`, descriptifs (`webserver`, `ssl-certificates`)
+- [ ] Booleans: préfixés `is_`, `has_`, `enable_` (`nginx_enable_ssl`)
+- [ ] Secrets: préfixés `vault_` (`vault_db_password`)
+- [ ] Chemins: suffixés `_path`, `_dir` (`app_log_dir`)
+
+### Idempotence
+
+- [ ] Modules natifs utilisés au lieu de `shell`/`command`
+- [ ] `state` défini explicitement (`present`, `absent`, `started`)
+- [ ] `creates`/`removes` utilisés pour `command`/`shell`
+- [ ] `changed_when` et `failed_when` définis pour scripts personnalisés
+- [ ] Handlers utilisés pour notifications (restart, reload)
+- [ ] Testé avec deux exécutions successives (0 changed attendu)
+- [ ] `--check --diff` utilisé avant exécution en production
+
+### Sécurité
+
+- [ ] `ansible-vault` pour tous les secrets
+- [ ] `.vault_pass` dans `.gitignore` (jamais versionné)
+- [ ] `become` utilisé uniquement quand nécessaire
+- [ ] Permissions des fichiers définies explicitement (`mode: '0600'`)
+- [ ] SSH key-based auth (pas de passwords)
+- [ ] `host_key_checking` désactivé uniquement en dev/test
+
+### Testing
+
+- [ ] Playbooks testés avec `--syntax-check`
+- [ ] Playbooks validés avec `ansible-lint`
+- [ ] Testé en `--check` mode avant production
+- [ ] CI/CD intégré (GitHub Actions, GitLab CI)
+- [ ] Environnement staging avant production
+
+### Documentation
+
+- [ ] `README.md` à jour dans chaque rôle
+- [ ] Variables documentées dans `defaults/main.yml`
+- [ ] Exemples d'utilisation fournis
+- [ ] Changelog maintenu pour les modifications importantes
+
+### Monitoring et logs
+
+- [ ] Logs activés (`log_path` dans `ansible.cfg`)
+- [ ] Profiling activé en permanence
+- [ ] Rotation des logs configurée
+- [ ] Alertes sur échecs (email, Slack, etc.)
+
+### Maintenance
+
+- [ ] Ansible mis à jour régulièrement
+- [ ] Collections mises à jour (`ansible-galaxy collection upgrade`)
+- [ ] Rôles externes mis à jour (`ansible-galaxy role install --force`)
+- [ ] Revue régulière des playbooks (refactoring)
+- [ ] Suppression du code mort (tasks, variables non utilisées)
+
+---
+
+## Ressources complémentaires
+
+### Documentation officielle
+
+- [Ansible Performance Tuning](https://docs.ansible.com/ansible/latest/user_guide/playbooks_strategies.html)
+- [Ansible Best Practices](https://docs.ansible.com/ansible/latest/user_guide/playbooks_best_practices.html)
+- [Ansible Vault](https://docs.ansible.com/ansible/latest/user_guide/vault.html)
+
+### Outils recommandés
+
+- **ansible-lint**: Linter pour playbooks Ansible
+- **Mitogen**: Accélérateur de connexions SSH
+- **ARA**: Interface web pour analyser les exécutions
+- **Ansible Tower / AWX**: Interface d'orchestration complète
+
+### Commandes utiles de diagnostic
+
+```bash
+# Vérifier la syntaxe
+ansible-playbook playbook.yml --syntax-check
+
+# Linter
+ansible-lint playbook.yml
+
+# Dry-run avec diff
+ansible-playbook playbook.yml --check --diff
+
+# Profiling
+ANSIBLE_CALLBACK_WHITELIST=profile_tasks,timer ansible-playbook playbook.yml
+
+# Debug verbeux
+ansible-playbook playbook.yml -vvvv
+
+# Liste des hôtes affectés
+ansible-playbook playbook.yml --list-hosts
+
+# Liste des tâches qui seront exécutées
+ansible-playbook playbook.yml --list-tasks
+
+# Start from a specific task
+ansible-playbook playbook.yml --start-at-task="Install Nginx"
+```
+
+---
+
+**Dernière mise à jour:** 2026-02-04

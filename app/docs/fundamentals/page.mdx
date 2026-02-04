@@ -1,0 +1,1028 @@
+# Fondamentaux Ansible
+
+## Introduction
+
+Ansible est un outil d'automatisation open-source qui permet de gérer la configuration, le déploiement d'applications et l'orchestration de tâches sur de multiples serveurs. Sa philosophie repose sur la simplicité, l'absence d'agent et l'utilisation de SSH comme protocole de communication principal.
+
+## Architecture Ansible
+
+### Composants principaux
+
+L'architecture Ansible repose sur trois éléments fondamentaux :
+
+#### 1. Control Node (Nœud de contrôle)
+
+Le **control node** est la machine depuis laquelle vous exécutez les commandes Ansible. C'est votre poste de travail ou un serveur dédié à l'automatisation.
+
+**Caractéristiques :**
+- Nécessite Python 3.9+ (ou Python 2.7 pour les versions anciennes)
+- Peut être Linux, macOS, ou WSL sous Windows
+- Windows **ne peut pas** être un control node
+- Stocke les playbooks, l'inventaire et la configuration
+
+**Installation des dépendances :**
+```bash
+# Sur le control node
+sudo apt update
+sudo apt install python3 python3-pip sshpass
+```
+
+#### 2. Managed Nodes (Nœuds gérés)
+
+Les **managed nodes** sont les serveurs cibles que vous automatisez avec Ansible.
+
+**Caractéristiques :**
+- Aucun agent Ansible requis (agentless)
+- Nécessite uniquement Python 2.6+ ou Python 3.5+
+- Accessible via SSH (Linux/Unix) ou WinRM (Windows)
+- Peut être physique, virtuel, cloud ou conteneur
+
+**Prérequis côté managed node :**
+```bash
+# Sur chaque managed node
+sudo apt install python3
+
+# Vérifier Python
+python3 --version
+```
+
+#### 3. Architecture Agentless
+
+Contrairement à Puppet, Chef ou Salt, Ansible est **agentless** :
+
+```
+┌─────────────────┐
+│  Control Node   │
+│   (Ansible)     │
+└────────┬────────┘
+         │
+         │ SSH (port 22)
+         │
+    ┌────┴────────────────────┐
+    │                         │
+┌───▼────┐              ┌────▼────┐
+│ Node 1 │              │ Node 2  │
+│ Python │              │ Python  │
+└────────┘              └─────────┘
+```
+
+**Avantages :**
+- Pas de daemon à maintenir sur les serveurs
+- Moins de surface d'attaque (sécurité)
+- Facilité de mise à jour (seulement le control node)
+- Overhead minimal sur les managed nodes
+
+**Fonctionnement :**
+1. Ansible se connecte via SSH au managed node
+2. Copie le module Python nécessaire
+3. Exécute le module
+4. Récupère le résultat
+5. Supprime le module temporaire
+
+## Installation Ansible
+
+### Via pip (recommandé)
+
+La méthode pip permet d'obtenir la dernière version stable :
+
+```bash
+# Installation pour l'utilisateur courant
+pip3 install --user ansible
+
+# Installation globale (nécessite sudo)
+sudo pip3 install ansible
+
+# Installation d'une version spécifique
+pip3 install ansible==9.1.0
+
+# Installation avec ansible-core seulement (minimal)
+pip3 install ansible-core
+```
+
+**Différence entre `ansible` et `ansible-core` :**
+- **ansible-core** : Moteur Ansible + modules built-in (~60 modules)
+- **ansible** : ansible-core + collections community (~3500+ modules)
+
+### Via les gestionnaires de paquets
+
+#### Ubuntu/Debian
+
+```bash
+# Via apt (version stable mais parfois ancienne)
+sudo apt update
+sudo apt install ansible
+
+# Via PPA pour une version plus récente
+sudo apt-add-repository ppa:ansible/ansible
+sudo apt update
+sudo apt install ansible
+```
+
+#### RHEL/CentOS/Rocky Linux
+
+```bash
+# RHEL 8/9
+sudo dnf install ansible
+
+# CentOS 7
+sudo yum install epel-release
+sudo yum install ansible
+```
+
+#### macOS
+
+```bash
+# Via Homebrew
+brew install ansible
+
+# Via pip
+pip3 install --user ansible
+```
+
+### Vérification de l'installation
+
+```bash
+# Version Ansible
+ansible --version
+
+# Exemple de sortie :
+# ansible [core 2.16.3]
+#   config file = /etc/ansible/ansible.cfg
+#   configured module search path = ['/home/user/.ansible/plugins/modules']
+#   ansible python module location = /usr/lib/python3/dist-packages/ansible
+#   ansible collection location = /home/user/.ansible/collections
+#   executable location = /usr/bin/ansible
+#   python version = 3.11.6
+#   jinja version = 3.1.2
+#   libyaml = True
+
+# Tester la connectivité locale
+ansible localhost -m ansible.builtin.ping
+
+# Vérifier les collections installées
+ansible-galaxy collection list
+```
+
+### Versions et compatibilité
+
+| Version Ansible | ansible-core | Python Control Node | Python Managed Node | EOL |
+|-----------------|--------------|---------------------|---------------------|-----|
+| 9.x | 2.16.x | 3.10 - 3.12 | 2.7, 3.6 - 3.12 | ~ Nov 2025 |
+| 8.x | 2.15.x | 3.9 - 3.11 | 2.7, 3.5 - 3.11 | ~ Nov 2024 |
+| 7.x | 2.14.x | 3.9 - 3.11 | 2.7, 3.5 - 3.11 | ~ Mai 2024 |
+
+## Hiérarchie de configuration `ansible.cfg`
+
+Ansible cherche son fichier de configuration selon une **hiérarchie stricte** (ordre de priorité) :
+
+### Ordre de précédence (du plus prioritaire au moins prioritaire)
+
+#### 1. Variable d'environnement `ANSIBLE_CONFIG`
+
+La plus haute priorité. Utile pour basculer entre différentes configurations :
+
+```bash
+# Définir temporairement
+export ANSIBLE_CONFIG=/path/to/custom/ansible.cfg
+ansible-playbook site.yml
+
+# Utilisation ponctuelle
+ANSIBLE_CONFIG=~/project/ansible.cfg ansible-playbook deploy.yml
+```
+
+#### 2. `./ansible.cfg` (répertoire courant)
+
+Fichier de configuration dans le répertoire où vous exécutez les commandes Ansible.
+
+```bash
+# Structure de projet
+project/
+├── ansible.cfg          # ← Sera utilisé si vous êtes dans project/
+├── inventory/
+├── playbooks/
+└── roles/
+
+cd project/
+ansible-playbook playbooks/site.yml  # Utilise ./ansible.cfg
+```
+
+**Usage :** Configuration spécifique au projet (recommandé).
+
+#### 3. `~/.ansible.cfg` (home utilisateur)
+
+Fichier de configuration personnel dans votre répertoire home.
+
+```bash
+# Créer une config personnelle
+cat > ~/.ansible.cfg << 'EOF'
+[defaults]
+inventory = ~/ansible/inventory
+roles_path = ~/ansible/roles
+EOF
+```
+
+**Usage :** Configuration par défaut pour tous vos projets personnels.
+
+#### 4. `/etc/ansible/ansible.cfg` (système)
+
+Configuration globale pour tous les utilisateurs du système.
+
+```bash
+# Créé lors de l'installation via apt/yum
+ls -l /etc/ansible/ansible.cfg
+```
+
+**Usage :** Configuration par défaut du système (rarement modifié).
+
+### Vérification de la configuration active
+
+```bash
+# Afficher le fichier de configuration utilisé
+ansible --version | grep "config file"
+
+# Afficher toutes les configurations
+ansible-config dump --only-changed
+
+# Afficher une configuration spécifique
+ansible-config dump | grep -i remote_user
+
+# Lister toutes les variables de configuration
+ansible-config list
+```
+
+### Exemple pratique de hiérarchie
+
+```bash
+# Créer plusieurs configs pour tester
+echo "[defaults]" > /tmp/ansible.cfg
+echo "host_key_checking = False" >> /tmp/ansible.cfg
+
+echo "[defaults]" > ~/.ansible.cfg
+echo "host_key_checking = True" >> ~/.ansible.cfg
+
+# Test 1 : Sans ANSIBLE_CONFIG (utilise ~/.ansible.cfg)
+ansible localhost -m ansible.builtin.debug -a "msg='Test'"
+
+# Test 2 : Avec ANSIBLE_CONFIG (utilise /tmp/ansible.cfg)
+ANSIBLE_CONFIG=/tmp/ansible.cfg ansible localhost -m ansible.builtin.debug -a "msg='Test'"
+
+# Test 3 : Depuis un répertoire avec ansible.cfg (utilise ./ansible.cfg)
+cd /tmp
+ansible localhost -m ansible.builtin.debug -a "msg='Test'"
+```
+
+## Configuration SSH
+
+SSH est le protocole de communication par défaut entre le control node et les managed nodes. Une configuration SSH optimale est cruciale pour les performances et la sécurité.
+
+### Authentification par clés SSH
+
+L'authentification par clés est **obligatoire** pour l'automatisation (pas de saisie manuelle de mot de passe).
+
+#### Génération de clés SSH
+
+```bash
+# Générer une paire de clés ED25519 (recommandé)
+ssh-keygen -t ed25519 -C "ansible-automation" -f ~/.ssh/ansible_ed25519
+
+# Alternative : RSA 4096 bits
+ssh-keygen -t rsa -b 4096 -C "ansible-automation" -f ~/.ssh/ansible_rsa
+
+# Sans passphrase pour l'automatisation (attention : risque sécurité)
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/ansible_ed25519
+```
+
+**Structure générée :**
+```
+~/.ssh/
+├── ansible_ed25519       # Clé privée (JAMAIS partager)
+└── ansible_ed25519.pub   # Clé publique (à copier sur les serveurs)
+```
+
+#### Déploiement des clés publiques
+
+**Méthode 1 : `ssh-copy-id` (simple)**
+
+```bash
+# Copier la clé sur un serveur
+ssh-copy-id -i ~/.ssh/ansible_ed25519.pub user@server.example.com
+
+# Copier sur plusieurs serveurs
+for host in web{1..3}.example.com; do
+  ssh-copy-id -i ~/.ssh/ansible_ed25519.pub ansible@$host
+done
+```
+
+**Méthode 2 : Manuelle**
+
+```bash
+# Sur le control node
+cat ~/.ssh/ansible_ed25519.pub
+
+# Sur chaque managed node
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+echo "ssh-ed25519 AAAA... ansible-automation" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+**Méthode 3 : Via Ansible (bootstrap initial avec mot de passe)**
+
+```bash
+# Créer un playbook bootstrap.yml
+cat > bootstrap.yml << 'EOF'
+---
+- name: Bootstrap SSH keys
+  hosts: all
+  gather_facts: false
+  vars:
+    ansible_ssh_user: root
+    ansible_ssh_pass: "{{ lookup('env', 'SSH_PASSWORD') }}"
+  tasks:
+    - name: Ensure .ssh directory exists
+      ansible.builtin.file:
+        path: /home/ansible/.ssh
+        state: directory
+        mode: '0700'
+        owner: ansible
+        group: ansible
+
+    - name: Deploy SSH public key
+      ansible.posix.authorized_key:
+        user: ansible
+        key: "{{ lookup('file', '~/.ssh/ansible_ed25519.pub') }}"
+        state: present
+EOF
+
+# Exécuter (une seule fois)
+SSH_PASSWORD='temporarypass' ansible-playbook bootstrap.yml -i inventory.ini
+```
+
+#### Test de connexion SSH
+
+```bash
+# Tester la connexion avec la clé
+ssh -i ~/.ssh/ansible_ed25519 ansible@server.example.com
+
+# Tester avec mode verbose (debug)
+ssh -vvv -i ~/.ssh/ansible_ed25519 ansible@server.example.com
+
+# Tester avec Ansible
+ansible all -i server.example.com, -u ansible -m ansible.builtin.ping
+```
+
+### Configuration du SSH Agent
+
+Le SSH agent permet de charger les clés en mémoire pour éviter de spécifier `-i` à chaque fois.
+
+#### Démarrage et ajout de clés
+
+```bash
+# Démarrer l'agent SSH
+eval "$(ssh-agent -s)"
+
+# Ajouter une clé
+ssh-add ~/.ssh/ansible_ed25519
+
+# Lister les clés chargées
+ssh-add -l
+
+# Supprimer toutes les clés
+ssh-add -D
+```
+
+#### Configuration automatique au démarrage
+
+Ajouter dans `~/.bashrc` ou `~/.zshrc` :
+
+```bash
+# Auto-start SSH agent
+if [ -z "$SSH_AUTH_SOCK" ]; then
+  eval "$(ssh-agent -s)" > /dev/null
+  ssh-add ~/.ssh/ansible_ed25519 2>/dev/null
+fi
+```
+
+#### Forwarding de l'agent SSH
+
+Permet d'utiliser vos clés SSH locales sur un serveur distant (utile pour les bastions).
+
+**Configuration dans `~/.ssh/config` :**
+
+```ssh-config
+Host bastion.example.com
+  ForwardAgent yes
+  User ansible
+  IdentityFile ~/.ssh/ansible_ed25519
+```
+
+**Test du forwarding :**
+
+```bash
+# Se connecter au bastion
+ssh bastion.example.com
+
+# Depuis le bastion, se connecter à un serveur interne (utilise votre clé locale)
+ssh internal-server.local
+```
+
+⚠️ **Sécurité :** N'activez le forwarding que sur des serveurs de confiance.
+
+### Bastions et Jump Hosts
+
+Les bastions (ou jump hosts) sont des serveurs intermédiaires pour accéder à des serveurs dans des réseaux privés.
+
+#### Architecture typique
+
+```
+Internet
+    │
+    ▼
+┌──────────────┐
+│   Bastion    │  (IP publique)
+│ 203.0.113.10 │
+└──────┬───────┘
+       │ Réseau privé
+   ────┴──────────────
+   │                 │
+┌──▼──────────┐  ┌──▼──────────┐
+│   Web-01    │  │   DB-01     │
+│ 10.0.1.10   │  │ 10.0.2.10   │
+└─────────────┘  └─────────────┘
+```
+
+#### Méthode 1 : ProxyJump (SSH native, recommandé)
+
+**Configuration dans `~/.ssh/config` :**
+
+```ssh-config
+# Bastion configuration
+Host bastion
+  HostName 203.0.113.10
+  User ansible
+  IdentityFile ~/.ssh/ansible_ed25519
+  ForwardAgent yes
+
+# Serveurs internes via bastion
+Host 10.0.1.* 10.0.2.*
+  User ansible
+  IdentityFile ~/.ssh/ansible_ed25519
+  ProxyJump bastion
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+
+# Configuration spécifique par serveur
+Host web-01
+  HostName 10.0.1.10
+  ProxyJump bastion
+
+Host db-01
+  HostName 10.0.2.10
+  ProxyJump bastion
+```
+
+**Test :**
+
+```bash
+# Connexion directe via bastion (transparent)
+ssh web-01
+
+# Avec Ansible
+ansible web-01 -i inventory.ini -m ansible.builtin.ping
+```
+
+#### Méthode 2 : ProxyCommand (compatible anciennes versions SSH)
+
+**Configuration dans `~/.ssh/config` :**
+
+```ssh-config
+Host bastion
+  HostName 203.0.113.10
+  User ansible
+  IdentityFile ~/.ssh/ansible_ed25519
+
+Host 10.0.1.* 10.0.2.*
+  User ansible
+  IdentityFile ~/.ssh/ansible_ed25519
+  ProxyCommand ssh -W %h:%p bastion
+```
+
+#### Méthode 3 : Configuration dans Ansible
+
+**Option 1 : Variables d'inventaire**
+
+```ini
+# inventory.ini
+[webservers]
+web-01 ansible_host=10.0.1.10
+
+[dbservers]
+db-01 ansible_host=10.0.2.10
+
+[internal:children]
+webservers
+dbservers
+
+[internal:vars]
+ansible_user=ansible
+ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q ansible@203.0.113.10"'
+```
+
+**Option 2 : Dans `ansible.cfg`**
+
+```ini
+[defaults]
+[ssh_connection]
+ssh_args = -o ProxyCommand="ssh -W %h:%p -q ansible@203.0.113.10"
+```
+
+**Option 3 : Variables group_vars**
+
+```yaml
+# group_vars/internal.yml
+---
+ansible_user: ansible
+ansible_ssh_common_args: '-o ProxyCommand="ssh -W %h:%p -q ansible@203.0.113.10"'
+ansible_ssh_private_key_file: ~/.ssh/ansible_ed25519
+```
+
+#### Test complet de configuration bastion
+
+```bash
+# 1. Vérifier la config SSH
+ssh -G web-01 | grep -i proxy
+
+# 2. Tester SSH direct
+ssh web-01 uptime
+
+# 3. Tester avec Ansible ad-hoc
+ansible web-01 -i inventory.ini -m ansible.builtin.command -a "uptime"
+
+# 4. Tester un playbook
+cat > test-bastion.yml << 'EOF'
+---
+- name: Test bastion connectivity
+  hosts: internal
+  gather_facts: true
+  tasks:
+    - name: Display hostname
+      ansible.builtin.debug:
+        msg: "Connected to {{ ansible_hostname }} via bastion"
+EOF
+
+ansible-playbook test-bastion.yml -i inventory.ini
+```
+
+### Optimisations SSH pour Ansible
+
+#### ControlMaster et ControlPersist
+
+Ces options réutilisent les connexions SSH existantes pour accélérer les exécutions multiples.
+
+**Configuration dans `~/.ssh/config` :**
+
+```ssh-config
+Host *
+  ControlMaster auto
+  ControlPath ~/.ssh/sockets/%r@%h-%p
+  ControlPersist 600
+  ServerAliveInterval 60
+  ServerAliveCountMax 3
+  Compression yes
+```
+
+**Explication :**
+- `ControlMaster auto` : Réutilise les connexions existantes
+- `ControlPath` : Emplacement des sockets de contrôle
+- `ControlPersist 600` : Garde la connexion 10 minutes après la dernière utilisation
+- `ServerAliveInterval` : Envoie un keepalive toutes les 60s
+- `Compression` : Active la compression (utile sur liens lents)
+
+**Créer le répertoire des sockets :**
+
+```bash
+mkdir -p ~/.ssh/sockets
+chmod 700 ~/.ssh/sockets
+```
+
+#### Pipelining SSH
+
+Le pipelining réduit le nombre de connexions SSH en exécutant plusieurs tâches dans une seule connexion.
+
+**Activation dans `ansible.cfg` :**
+
+```ini
+[defaults]
+[ssh_connection]
+pipelining = True
+```
+
+⚠️ **Prérequis :** Désactiver `requiretty` dans `/etc/sudoers` sur les managed nodes :
+
+```bash
+# Sur chaque managed node
+sudo visudo
+
+# Commenter ou supprimer cette ligne :
+# Defaults    requiretty
+
+# Ou ajouter :
+Defaults !requiretty
+```
+
+## Exemple complet de `ansible.cfg`
+
+Voici un fichier de configuration commenté couvrant les options principales :
+
+```ini
+#####################################
+# ANSIBLE CONFIGURATION COMPLETE    #
+#####################################
+
+[defaults]
+
+# ============================================
+# INVENTAIRE
+# ============================================
+
+# Chemin vers le fichier d'inventaire par défaut
+# Peut être un fichier, un répertoire ou une liste séparée par des virgules
+inventory = ./inventory/hosts.ini
+
+# Permet d'utiliser plusieurs inventaires (statique + dynamique)
+# inventory = ./inventory/static.ini,./inventory/ec2.py
+
+# Désactiver les plugins d'inventaire non utilisés pour accélérer le parsing
+# inventory_enabled = host_list, script, auto, yaml, ini, toml
+
+# ============================================
+# RÔLES
+# ============================================
+
+# Chemins de recherche pour les rôles (séparés par ':')
+roles_path = ./roles:~/.ansible/roles:/usr/share/ansible/roles
+
+# Chemins de recherche pour les collections
+collections_path = ~/.ansible/collections:/usr/share/ansible/collections
+
+# ============================================
+# UTILISATEUR ET PRIVILÈGES
+# ============================================
+
+# Utilisateur par défaut pour les connexions SSH
+remote_user = ansible
+
+# Devenir root par défaut (équivalent de sudo)
+become = False
+become_method = sudo
+become_user = root
+become_ask_pass = False
+
+# ============================================
+# MODULES ET PLUGINS
+# ============================================
+
+# Utiliser des FQCN (Fully Qualified Collection Names) obligatoires
+# Désactiver pour permettre les noms courts (non recommandé)
+# collections_on_ansible_version_mismatch = warning
+
+# Chemins de recherche pour les plugins
+action_plugins = ~/.ansible/plugins/action:/usr/share/ansible/plugins/action
+callback_plugins = ~/.ansible/plugins/callback:/usr/share/ansible/plugins/callback
+connection_plugins = ~/.ansible/plugins/connection:/usr/share/ansible/plugins/connection
+filter_plugins = ~/.ansible/plugins/filter:/usr/share/ansible/plugins/filter
+lookup_plugins = ~/.ansible/plugins/lookup:/usr/share/ansible/plugins/lookup
+vars_plugins = ~/.ansible/plugins/vars:/usr/share/ansible/plugins/vars
+
+# ============================================
+# FACTS ET GATHERING
+# ============================================
+
+# Stratégie de collecte des facts
+# - implicit : Collecte automatique (défaut)
+# - explicit : Collecte uniquement si gather_facts: true
+# - smart : Collecte si pas de cache valide
+gathering = smart
+
+# Timeout pour la collecte des facts (en secondes)
+gather_timeout = 30
+
+# Cache des facts pour éviter de les recolleter
+fact_caching = jsonfile
+fact_caching_connection = /tmp/ansible_facts_cache
+fact_caching_timeout = 86400  # 24 heures
+
+# Sous-ensemble de facts à collecter (accélère la collecte)
+# gather_subset = !hardware,network,virtual
+# gather_subset = network,virtual,ohai
+
+# ============================================
+# PARALLÉLISME
+# ============================================
+
+# Nombre de connexions parallèles (forks)
+forks = 20
+
+# Nombre de tâches à exécuter en parallèle par hôte
+# Utile pour les tâches asynchrones
+poll_interval = 15
+
+# ============================================
+# TIMEOUTS
+# ============================================
+
+# Timeout global pour les connexions (en secondes)
+timeout = 30
+
+# Timeout pour les commandes asynchrones
+async_timeout = 3600  # 1 heure
+
+# ============================================
+# SÉCURITÉ SSH
+# ============================================
+
+# Désactiver la vérification des clés d'hôte SSH (ATTENTION : moins sécurisé)
+# Utile pour les environnements de développement/test
+host_key_checking = True
+
+# Fichier known_hosts personnalisé
+# known_hosts = ~/.ssh/ansible_known_hosts
+
+# Clé privée SSH par défaut
+private_key_file = ~/.ssh/ansible_ed25519
+
+# ============================================
+# LOGS ET VERBOSITÉ
+# ============================================
+
+# Fichier de log des opérations Ansible
+log_path = /var/log/ansible/ansible.log
+
+# Niveau de verbosité par défaut (0-4)
+# 0 = Normal, 1 = -v, 2 = -vv, 3 = -vvv, 4 = -vvvv
+# verbosity = 0
+
+# Afficher les tâches skippées
+display_skipped_hosts = False
+
+# Afficher les arguments des tâches dans les logs
+display_args_to_stdout = False
+
+# ============================================
+# CALLBACKS ET PLUGINS DE SORTIE
+# ============================================
+
+# Plugins de callback activés (affichage des résultats)
+# Exemples : timer, profile_tasks, yaml, json
+callbacks_enabled = timer, profile_tasks
+
+# Format de sortie (default, minimal, yaml, json)
+stdout_callback = yaml
+
+# Afficher les résultats en couleur
+nocolor = False
+
+# ============================================
+# GESTION DES ERREURS
+# ============================================
+
+# Continuer même si un hôte échoue
+# any_errors_fatal = False
+
+# Nombre de tentatives pour les tâches
+# retry_files_enabled = True
+# retry_files_save_path = ~/.ansible-retry
+
+# ============================================
+# VAULT (Chiffrement)
+# ============================================
+
+# Fichier contenant le mot de passe Vault
+# vault_password_file = ~/.ansible/.vault_pass
+
+# Identité Vault par défaut (pour multi-vault)
+# vault_identity_list = prod@~/.ansible/.vault_pass_prod, dev@~/.ansible/.vault_pass_dev
+
+# ============================================
+# DIVERS
+# ============================================
+
+# Interpréteur Python sur les managed nodes
+# interpreter_python = auto_silent
+# interpreter_python = /usr/bin/python3
+
+# Stratégie d'exécution (linear, free, debug)
+strategy = linear
+
+# Afficher les diffs pour les changements de fichiers
+diff_mode = True
+
+# Activer le mode check par défaut
+# check_mode = False
+
+# Forcer les handlers à s'exécuter même en mode check
+# force_handlers = False
+
+# Commande à utiliser pour devenir un autre utilisateur (sudo, su, pbrun, etc.)
+# executable = /bin/bash
+
+# Variables d'environnement à injecter sur les managed nodes
+# environment = LANG=en_US.UTF-8, LC_ALL=en_US.UTF-8
+
+# ============================================
+# OPTIMISATIONS
+# ============================================
+
+# Taille maximale des résultats à afficher
+max_diff_size = 104448  # 100 KB
+
+# Activer les plugins de cache
+cache_plugin = jsonfile
+cache_plugin_connection = /tmp/ansible_cache
+cache_plugin_timeout = 3600
+
+# Mitogen (si installé) pour des performances extrêmes
+# strategy_plugins = ~/.ansible/plugins/mitogen/ansible_mitogen/plugins/strategy
+# strategy = mitogen_linear
+
+
+#####################################
+# SSH CONNECTION SETTINGS           #
+#####################################
+
+[ssh_connection]
+
+# Activer le pipelining SSH (réduit les connexions)
+pipelining = True
+
+# Arguments SSH supplémentaires
+ssh_args = -o ControlMaster=auto -o ControlPersist=600s -o ServerAliveInterval=60 -o ServerAliveCountMax=3
+
+# Chemin vers les sockets de contrôle SSH
+control_path = ~/.ssh/sockets/%%r@%%h:%%p
+
+# Transférer l'agent SSH
+# ssh_common_args = -o ForwardAgent=yes
+
+# Transférer X11
+# ssh_common_args = -o ForwardX11=yes
+
+# Désactiver le transfert de fichiers SCP (utiliser SFTP)
+scp_if_ssh = smart
+
+# Mode de transfert (smart, sftp, scp, piped)
+transfer_method = smart
+
+# Timeout pour les connexions SFTP
+sftp_batch_mode = True
+
+
+#####################################
+# PRIVILEGE ESCALATION              #
+#####################################
+
+[privilege_escalation]
+
+# Configuration par défaut du privilege escalation
+become = False
+become_method = sudo
+become_user = root
+become_ask_pass = False
+
+# Flags supplémentaires pour sudo
+# become_flags = -H -S -n
+
+
+#####################################
+# PARAMCONNECTION (POUR SSH NATIF)  #
+#####################################
+
+[paramiko_connection]
+
+# Utiliser Paramiko au lieu d'OpenSSH (déconseillé)
+# Plus lent mais compatible avec les vieilles versions de Python
+host_key_auto_add = False
+look_for_keys = True
+
+
+#####################################
+# PERSISTENT CONNECTION (RÉSEAU)    #
+#####################################
+
+[persistent_connection]
+
+# Timeout pour les connexions persistantes (équipements réseau)
+command_timeout = 30
+connect_timeout = 30
+connect_retry_timeout = 15
+
+
+#####################################
+# COLORS (PERSONNALISATION)         #
+#####################################
+
+[colors]
+
+# Personnaliser les couleurs de sortie
+highlight = white
+verbose = blue
+warn = bright purple
+error = red
+debug = dark gray
+deprecate = purple
+skip = cyan
+unreachable = red
+ok = green
+changed = yellow
+diff_add = green
+diff_remove = red
+diff_lines = cyan
+```
+
+## Vérification et test de la configuration
+
+Une fois votre `ansible.cfg` créé, testez-le :
+
+```bash
+# 1. Vérifier le fichier utilisé
+ansible --version
+
+# 2. Vérifier la syntaxe (pas d'erreur = OK)
+ansible-config dump
+
+# 3. Afficher les modifications par rapport au défaut
+ansible-config dump --only-changed
+
+# 4. Tester la connectivité
+ansible all -i inventory/hosts.ini -m ansible.builtin.ping
+
+# 5. Tester avec verbosité
+ansible all -i inventory/hosts.ini -m ansible.builtin.setup -vvv
+
+# 6. Vérifier les facts cachés
+ls -l /tmp/ansible_facts_cache/
+
+# 7. Tester le pipelining
+time ansible all -i inventory/hosts.ini -m ansible.builtin.command -a "uptime"
+```
+
+## Bonnes pratiques
+
+### Structure de configuration recommandée
+
+```
+ansible-project/
+├── ansible.cfg                 # Configuration du projet
+├── inventory/
+│   ├── production/
+│   │   ├── hosts.ini
+│   │   └── group_vars/
+│   └── staging/
+│       ├── hosts.ini
+│       └── group_vars/
+├── playbooks/
+├── roles/
+├── group_vars/
+├── host_vars/
+└── files/
+```
+
+### Sécurité
+
+1. **Clés SSH :**
+   - Utilisez ED25519 ou RSA 4096 bits
+   - Protégez les clés privées (chmod 600)
+   - Utilisez des clés différentes par environnement
+   - Activez le SSH agent forwarding uniquement sur des bastions de confiance
+
+2. **Ansible Vault :**
+   - Chiffrez les mots de passe et secrets
+   - Ne committez jamais les fichiers `vault_password_file`
+   - Utilisez des identités Vault multiples pour les environnements
+
+3. **Permissions :**
+   - Créez un utilisateur dédié `ansible` avec sudo limité
+   - Utilisez `become` uniquement quand nécessaire
+   - Auditez les logs régulièrement
+
+### Performance
+
+1. **Optimisations SSH :**
+   - ControlMaster + ControlPersist
+   - Pipelining activé
+   - Facts caching
+
+2. **Parallélisme :**
+   - Augmentez `forks` selon vos ressources
+   - Utilisez la stratégie `free` pour les tâches indépendantes
+
+3. **Collecte des facts :**
+   - Utilisez `gather_subset` pour limiter la collecte
+   - Désactivez avec `gather_facts: false` si non nécessaire
+
+## Ressources et documentation
+
+- [Documentation officielle Ansible](https://docs.ansible.com/)
+- [ansible.cfg reference complète](https://docs.ansible.com/ansible/latest/reference_appendices/config.html)
+- [Best practices](https://docs.ansible.com/ansible/latest/tips_tricks/ansible_tips_tricks.html)
+- [Galaxy (rôles communautaires)](https://galaxy.ansible.com/)

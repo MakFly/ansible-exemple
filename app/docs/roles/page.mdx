@@ -1,0 +1,1124 @@
+# Rôles & Collections
+
+Les **rôles** et **collections** sont les mécanismes principaux d'Ansible pour organiser, réutiliser et partager du code de manière structurée et modulaire.
+
+---
+
+## Structure d'un Rôle
+
+Un rôle Ansible suit une structure de répertoires standardisée. Chaque répertoire a une fonction spécifique :
+
+```
+mon_role/
+├── tasks/          # Tâches principales du rôle
+│   └── main.yml
+├── handlers/       # Handlers (actions déclenchées par notify)
+│   └── main.yml
+├── templates/      # Templates Jinja2 (.j2)
+│   └── config.j2
+├── files/          # Fichiers statiques à copier
+│   └── script.sh
+├── vars/           # Variables (priorité haute)
+│   └── main.yml
+├── defaults/       # Variables par défaut (priorité basse)
+│   └── main.yml
+├── meta/           # Métadonnées et dépendances
+│   └── main.yml
+└── tests/          # Tests et inventaire de test
+    ├── inventory
+    └── test.yml
+```
+
+### Détail des Répertoires
+
+#### 1. **tasks/** - Les Tâches
+
+Contient les tâches à exécuter. Ansible charge automatiquement `tasks/main.yml`.
+
+```yaml
+# tasks/main.yml
+---
+- name: Installer Apache
+  ansible.builtin.apt:
+    name: apache2
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Copier la configuration
+  ansible.builtin.template:
+    src: apache.conf.j2
+    dest: /etc/apache2/apache2.conf
+  notify: Redémarrer Apache
+
+- name: Démarrer Apache
+  ansible.builtin.service:
+    name: apache2
+    state: started
+    enabled: true
+```
+
+Vous pouvez diviser les tâches en plusieurs fichiers :
+
+```yaml
+# tasks/main.yml
+---
+- name: Inclure les tâches d'installation
+  ansible.builtin.include_tasks: install.yml
+
+- name: Inclure les tâches de configuration
+  ansible.builtin.include_tasks: configure.yml
+```
+
+#### 2. **handlers/** - Les Handlers
+
+Contient les actions déclenchées par `notify`. Exécutés une seule fois en fin de play.
+
+```yaml
+# handlers/main.yml
+---
+- name: Redémarrer Apache
+  ansible.builtin.service:
+    name: apache2
+    state: restarted
+
+- name: Recharger Apache
+  ansible.builtin.service:
+    name: apache2
+    state: reloaded
+```
+
+#### 3. **templates/** - Les Templates Jinja2
+
+Fichiers de configuration dynamiques avec variables.
+
+```jinja2
+# templates/apache.conf.j2
+ServerRoot "/etc/apache2"
+Listen {{ apache_port | default(80) }}
+
+<VirtualHost *:{{ apache_port | default(80) }}>
+    ServerName {{ server_name }}
+    DocumentRoot {{ document_root }}
+
+    <Directory {{ document_root }}>
+        AllowOverride All
+        Require all granted
+    </Directory>
+</VirtualHost>
+```
+
+#### 4. **files/** - Les Fichiers Statiques
+
+Fichiers copiés tels quels sans transformation.
+
+```yaml
+# tasks/main.yml
+- name: Copier un script
+  ansible.builtin.copy:
+    src: backup.sh
+    dest: /usr/local/bin/backup.sh
+    mode: '0755'
+```
+
+Le fichier `files/backup.sh` sera copié directement.
+
+#### 5. **vars/** - Variables (Priorité Haute)
+
+Variables spécifiques au rôle, difficilement modifiables.
+
+```yaml
+# vars/main.yml
+---
+apache_package_name: apache2
+apache_service_name: apache2
+apache_config_path: /etc/apache2
+```
+
+#### 6. **defaults/** - Variables par Défaut (Priorité Basse)
+
+Variables facilement modifiables par l'utilisateur du rôle.
+
+```yaml
+# defaults/main.yml
+---
+apache_port: 80
+apache_max_clients: 150
+apache_enable_ssl: false
+server_admin: admin@example.com
+```
+
+**Ordre de priorité des variables :** `defaults/` < variables d'inventaire < `vars/` < variables de playbook < variables en ligne de commande.
+
+#### 7. **meta/** - Métadonnées et Dépendances
+
+Informations sur le rôle et ses dépendances.
+
+```yaml
+# meta/main.yml
+---
+galaxy_info:
+  author: Votre Nom
+  description: Installation et configuration d'Apache
+  license: MIT
+  min_ansible_version: "2.9"
+
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+
+  galaxy_tags:
+    - web
+    - apache
+    - httpd
+
+dependencies:
+  - role: geerlingguy.firewall
+    vars:
+      firewall_allowed_tcp_ports:
+        - "80"
+        - "443"
+  - role: common
+```
+
+#### 8. **tests/** - Tests du Rôle
+
+Playbook de test et inventaire.
+
+```yaml
+# tests/test.yml
+---
+- hosts: localhost
+  remote_user: root
+  roles:
+    - mon_role
+```
+
+```ini
+# tests/inventory
+localhost ansible_connection=local
+```
+
+---
+
+## Création d'un Rôle avec ansible-galaxy
+
+### Initialiser un Nouveau Rôle
+
+```bash
+# Créer la structure complète d'un rôle
+ansible-galaxy init mon_role
+
+# Créer dans un répertoire spécifique
+ansible-galaxy init roles/mon_role
+
+# Créer avec un template personnalisé
+ansible-galaxy init --role-skeleton=~/mes_templates/role_skeleton mon_role
+```
+
+Structure générée :
+
+```
+mon_role/
+├── README.md
+├── defaults/
+│   └── main.yml
+├── files/
+├── handlers/
+│   └── main.yml
+├── meta/
+│   └── main.yml
+├── tasks/
+│   └── main.yml
+├── templates/
+├── tests/
+│   ├── inventory
+│   └── test.yml
+└── vars/
+    └── main.yml
+```
+
+### Utiliser un Rôle dans un Playbook
+
+```yaml
+# playbook.yml
+---
+- name: Configurer les serveurs web
+  hosts: webservers
+  become: true
+
+  roles:
+    - role: mon_role
+      vars:
+        apache_port: 8080
+        apache_enable_ssl: true
+```
+
+Ou avec `tasks` :
+
+```yaml
+---
+- name: Configurer les serveurs web
+  hosts: webservers
+  become: true
+
+  tasks:
+    - name: Importer le rôle Apache
+      ansible.builtin.include_role:
+        name: mon_role
+      vars:
+        apache_port: 8080
+```
+
+---
+
+## Installation depuis Ansible Galaxy
+
+### Rechercher des Rôles
+
+```bash
+# Rechercher des rôles
+ansible-galaxy search apache
+
+# Rechercher avec des tags
+ansible-galaxy search --author geerlingguy apache
+
+# Obtenir des informations sur un rôle
+ansible-galaxy info geerlingguy.apache
+```
+
+### Installer un Rôle
+
+```bash
+# Installer depuis Galaxy
+ansible-galaxy install geerlingguy.apache
+
+# Installer une version spécifique
+ansible-galaxy install geerlingguy.apache,2.0.0
+
+# Installer dans un répertoire personnalisé
+ansible-galaxy install geerlingguy.apache -p ./roles
+
+# Forcer la réinstallation
+ansible-galaxy install --force geerlingguy.apache
+```
+
+### Lister les Rôles Installés
+
+```bash
+# Lister tous les rôles
+ansible-galaxy list
+
+# Lister les rôles dans un répertoire spécifique
+ansible-galaxy list -p ./roles
+```
+
+### Supprimer un Rôle
+
+```bash
+# Supprimer un rôle
+ansible-galaxy remove geerlingguy.apache
+```
+
+---
+
+## Gérer les Dépendances avec requirements.yml
+
+Le fichier `requirements.yml` permet de définir toutes les dépendances de rôles et collections de manière centralisée.
+
+### Structure de requirements.yml
+
+```yaml
+# requirements.yml
+---
+# Rôles depuis Ansible Galaxy
+roles:
+  # Format court
+  - geerlingguy.docker
+
+  # Format complet avec version
+  - name: geerlingguy.apache
+    version: "3.1.4"
+
+  # Depuis un dépôt Git
+  - name: nginx
+    src: https://github.com/geerlingguy/ansible-role-nginx.git
+    version: master
+
+  # Depuis un dépôt Git avec un nom différent
+  - src: https://github.com/bennojoy/nginx
+    scm: git
+    version: master
+    name: nginx_role
+
+  # Depuis une URL tar.gz
+  - src: https://some.webserver.example.com/files/custom-role.tar.gz
+    name: custom-role
+
+# Collections
+collections:
+  # Depuis Galaxy
+  - name: community.general
+    version: ">=5.0.0"
+
+  - name: ansible.posix
+    version: "1.5.4"
+
+  # Depuis un dépôt Git
+  - name: https://github.com/organization/collection_repo.git
+    type: git
+    version: main
+```
+
+### Installer les Dépendances
+
+```bash
+# Installer tous les rôles
+ansible-galaxy install -r requirements.yml
+
+# Installer dans un répertoire spécifique
+ansible-galaxy install -r requirements.yml -p ./roles
+
+# Forcer la réinstallation
+ansible-galaxy install -r requirements.yml --force
+
+# Installer uniquement les rôles (pas les collections)
+ansible-galaxy role install -r requirements.yml
+
+# Installer uniquement les collections
+ansible-galaxy collection install -r requirements.yml
+```
+
+### Exemple Complet de Projet
+
+```
+mon_projet/
+├── ansible.cfg
+├── requirements.yml
+├── inventory/
+├── playbooks/
+└── roles/          # Rôles personnalisés
+    └── mon_role/
+```
+
+```yaml
+# requirements.yml
+---
+roles:
+  - geerlingguy.docker
+  - geerlingguy.postgresql
+  - geerlingguy.nginx
+
+collections:
+  - community.general
+  - community.docker
+  - ansible.posix
+```
+
+```bash
+# Installer toutes les dépendances
+ansible-galaxy install -r requirements.yml
+
+# Exécuter le playbook
+ansible-playbook -i inventory/hosts playbooks/site.yml
+```
+
+---
+
+## Dépendances entre Rôles
+
+### Définir des Dépendances dans meta/main.yml
+
+Un rôle peut dépendre d'autres rôles. Ansible les exécutera automatiquement avant le rôle principal.
+
+```yaml
+# roles/webserver/meta/main.yml
+---
+galaxy_info:
+  author: Votre Nom
+  description: Configuration d'un serveur web
+  min_ansible_version: "2.9"
+
+dependencies:
+  # Dépendance simple
+  - role: common
+
+  # Dépendance avec variables
+  - role: firewall
+    vars:
+      firewall_allowed_tcp_ports:
+        - 80
+        - 443
+
+  # Dépendance conditionnelle
+  - role: ssl_certificates
+    when: enable_ssl | bool
+
+  # Dépendance depuis Galaxy
+  - role: geerlingguy.php
+    vars:
+      php_version: "8.2"
+```
+
+### Ordre d'Exécution
+
+Quand vous utilisez un rôle avec dépendances :
+
+```yaml
+# playbook.yml
+- hosts: webservers
+  roles:
+    - webserver
+```
+
+Ordre d'exécution :
+1. `common` (dépendance)
+2. `firewall` (dépendance)
+3. `ssl_certificates` (dépendance, si condition vraie)
+4. `geerlingguy.php` (dépendance)
+5. `webserver` (rôle principal)
+
+### Éviter les Exécutions Multiples
+
+Par défaut, un rôle n'est exécuté qu'une seule fois, même s'il est référencé plusieurs fois.
+
+```yaml
+# meta/main.yml
+dependencies:
+  - role: common
+    allow_duplicates: false  # Défaut
+```
+
+Pour permettre l'exécution multiple avec des paramètres différents :
+
+```yaml
+# meta/main.yml
+dependencies:
+  - role: deploy_app
+    vars:
+      app_name: frontend
+      app_port: 3000
+    allow_duplicates: true
+
+  - role: deploy_app
+    vars:
+      app_name: backend
+      app_port: 8000
+    allow_duplicates: true
+```
+
+---
+
+## Collections Ansible
+
+Les **collections** sont des bundles de contenus Ansible : modules, rôles, plugins, playbooks.
+
+### Concept des Collections
+
+Une collection regroupe :
+- **Modules** : `community.general.docker_container`
+- **Rôles** : `community.mysql.mysql`
+- **Plugins** : callback, filter, lookup, etc.
+- **Playbooks** et documentation
+
+### FQCN (Fully Qualified Collection Name)
+
+Format : `namespace.collection.module`
+
+```yaml
+# Sans FQCN (déprécié)
+- apt:
+    name: nginx
+
+# Avec FQCN (recommandé)
+- ansible.builtin.apt:
+    name: nginx
+
+- community.general.docker_container:
+    name: web
+    image: nginx
+
+- community.postgresql.postgresql_db:
+    name: mydb
+```
+
+### Collections Populaires
+
+- **ansible.builtin** : modules de base (inclus avec Ansible)
+- **community.general** : modules communautaires divers
+- **community.docker** : gestion Docker
+- **community.postgresql** : gestion PostgreSQL
+- **community.mysql** : gestion MySQL
+- **ansible.posix** : outils POSIX (cron, synchronize, mount)
+- **kubernetes.core** : gestion Kubernetes
+- **amazon.aws** : modules AWS
+
+### Installer des Collections
+
+```bash
+# Installer depuis Galaxy
+ansible-galaxy collection install community.general
+
+# Installer une version spécifique
+ansible-galaxy collection install community.general:==7.0.0
+
+# Installer avec contrainte de version
+ansible-galaxy collection install 'community.general:>=7.0.0,<8.0.0'
+
+# Installer plusieurs collections
+ansible-galaxy collection install community.general community.docker
+
+# Installer depuis requirements.yml
+ansible-galaxy collection install -r requirements.yml
+
+# Installer dans un chemin personnalisé
+ansible-galaxy collection install community.general -p ./collections
+
+# Forcer la réinstallation
+ansible-galaxy collection install community.general --force
+```
+
+### Lister les Collections Installées
+
+```bash
+# Lister toutes les collections
+ansible-galaxy collection list
+
+# Lister dans un chemin spécifique
+ansible-galaxy collection list -p ./collections
+
+# Afficher les détails d'une collection
+ansible-galaxy collection list community.general
+```
+
+### Utiliser des Collections dans les Playbooks
+
+#### Méthode 1 : FQCN (Recommandé)
+
+```yaml
+---
+- name: Déployer une application Docker
+  hosts: all
+  tasks:
+    - name: Créer un conteneur
+      community.docker.docker_container:
+        name: webapp
+        image: nginx:latest
+        ports:
+          - "80:80"
+```
+
+#### Méthode 2 : Directive collections
+
+```yaml
+---
+- name: Déployer une application Docker
+  hosts: all
+  collections:
+    - community.docker
+    - community.general
+
+  tasks:
+    - name: Créer un conteneur
+      docker_container:
+        name: webapp
+        image: nginx:latest
+```
+
+#### Méthode 3 : Import au niveau des tâches
+
+```yaml
+---
+- name: Configuration système
+  hosts: all
+  tasks:
+    - name: Inclure des tâches Docker
+      ansible.builtin.include_tasks:
+        file: docker_tasks.yml
+      vars:
+        ansible_collections:
+          - community.docker
+```
+
+---
+
+## Créer une Collection Personnalisée
+
+### Structure d'une Collection
+
+```
+mon_namespace/
+└── ma_collection/
+    ├── galaxy.yml              # Métadonnées
+    ├── README.md
+    ├── docs/
+    ├── plugins/
+    │   ├── modules/            # Modules personnalisés
+    │   ├── inventory/
+    │   ├── filter/
+    │   └── callback/
+    ├── roles/                  # Rôles dans la collection
+    │   ├── role1/
+    │   └── role2/
+    ├── playbooks/              # Playbooks réutilisables
+    └── tests/
+```
+
+### Initialiser une Collection
+
+```bash
+# Créer la structure de base
+ansible-galaxy collection init mon_namespace.ma_collection
+
+# Structure générée
+mon_namespace/ma_collection/
+├── README.md
+├── galaxy.yml
+├── docs/
+├── plugins/
+│   └── README.md
+└── roles/
+```
+
+### Configurer galaxy.yml
+
+```yaml
+# galaxy.yml
+---
+namespace: mon_namespace
+name: ma_collection
+version: 1.0.0
+readme: README.md
+
+authors:
+  - Votre Nom <email@example.com>
+
+description: Une collection personnalisée pour l'infrastructure
+
+license:
+  - MIT
+
+tags:
+  - infrastructure
+  - deployment
+  - monitoring
+
+dependencies:
+  "community.general": ">=7.0.0"
+  "ansible.posix": ">=1.5.0"
+
+repository: https://github.com/mon_namespace/ma_collection
+documentation: https://docs.example.com/ma_collection
+homepage: https://example.com
+issues: https://github.com/mon_namespace/ma_collection/issues
+
+build_ignore:
+  - "*.tar.gz"
+  - ".git"
+  - ".github"
+  - "tests/output"
+```
+
+### Ajouter un Rôle à la Collection
+
+```bash
+# Créer un rôle dans la collection
+cd mon_namespace/ma_collection/roles
+ansible-galaxy init mon_role
+```
+
+### Ajouter un Module Personnalisé
+
+```python
+# plugins/modules/mon_module.py
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+from ansible.module_utils.basic import AnsibleModule
+
+DOCUMENTATION = r'''
+---
+module: mon_module
+short_description: Module personnalisé exemple
+description:
+  - Un module d'exemple pour la collection
+options:
+  name:
+    description: Nom de la ressource
+    required: true
+    type: str
+  state:
+    description: État désiré
+    choices: [ present, absent ]
+    default: present
+    type: str
+'''
+
+EXAMPLES = r'''
+- name: Créer une ressource
+  mon_namespace.ma_collection.mon_module:
+    name: ma_ressource
+    state: present
+'''
+
+def main():
+    module = AnsibleModule(
+        argument_spec=dict(
+            name=dict(type='str', required=True),
+            state=dict(type='str', default='present', choices=['present', 'absent'])
+        ),
+        supports_check_mode=True
+    )
+
+    name = module.params['name']
+    state = module.params['state']
+
+    result = dict(
+        changed=False,
+        name=name,
+        state=state
+    )
+
+    # Logique du module ici
+    if state == 'present':
+        result['changed'] = True
+        result['msg'] = f'Ressource {name} créée'
+
+    module.exit_json(**result)
+
+if __name__ == '__main__':
+    main()
+```
+
+### Construire la Collection
+
+```bash
+# Se placer dans le répertoire parent
+cd mon_namespace/ma_collection
+
+# Construire le tarball
+ansible-galaxy collection build
+
+# Fichier généré : mon_namespace-ma_collection-1.0.0.tar.gz
+```
+
+### Installer la Collection Localement
+
+```bash
+# Installer depuis le tarball
+ansible-galaxy collection install mon_namespace-ma_collection-1.0.0.tar.gz
+
+# Installer depuis le répertoire source
+ansible-galaxy collection install /chemin/vers/mon_namespace/ma_collection
+
+# Installer en mode éditable (développement)
+ansible-galaxy collection install /chemin/vers/mon_namespace/ma_collection --force
+```
+
+### Publier sur Galaxy
+
+```bash
+# Se connecter à Galaxy
+ansible-galaxy login
+
+# Publier la collection
+ansible-galaxy collection publish mon_namespace-ma_collection-1.0.0.tar.gz
+
+# Publier avec un token API
+ansible-galaxy collection publish mon_namespace-ma_collection-1.0.0.tar.gz --token=VOTRE_TOKEN
+```
+
+### Utiliser la Collection Personnalisée
+
+```yaml
+# requirements.yml
+---
+collections:
+  - name: mon_namespace.ma_collection
+    version: ">=1.0.0"
+```
+
+```yaml
+# playbook.yml
+---
+- name: Utiliser ma collection
+  hosts: all
+  collections:
+    - mon_namespace.ma_collection
+
+  tasks:
+    - name: Utiliser un module personnalisé
+      mon_module:
+        name: test
+        state: present
+
+    - name: Utiliser un rôle de la collection
+      ansible.builtin.include_role:
+        name: mon_namespace.ma_collection.mon_role
+```
+
+---
+
+## Best Practices d'Organisation des Rôles
+
+### 1. Nommage Cohérent
+
+```
+# Structure recommandée
+roles/
+├── common/              # Configuration de base
+├── security/            # Durcissement sécurité
+├── webserver/           # Serveur web générique
+├── webserver_nginx/     # Implémentation Nginx
+├── webserver_apache/    # Implémentation Apache
+├── database/            # Base de données générique
+├── database_postgresql/ # Implémentation PostgreSQL
+└── monitoring/          # Supervision
+```
+
+### 2. Granularité des Rôles
+
+**Principe : Un rôle = Une responsabilité**
+
+```yaml
+# ❌ Mauvais : rôle trop large
+roles/
+└── infrastructure/
+    ├── tasks/
+    │   ├── firewall.yml
+    │   ├── users.yml
+    │   ├── nginx.yml
+    │   ├── postgresql.yml
+    │   └── monitoring.yml
+
+# ✅ Bon : rôles spécialisés
+roles/
+├── firewall/
+├── users/
+├── nginx/
+├── postgresql/
+└── monitoring/
+```
+
+### 3. Variables : defaults vs vars
+
+```yaml
+# defaults/main.yml - Variables modifiables par l'utilisateur
+---
+nginx_port: 80
+nginx_worker_processes: auto
+nginx_enable_ssl: false
+
+# vars/main.yml - Variables internes au rôle
+---
+nginx_config_path: /etc/nginx
+nginx_log_path: /var/log/nginx
+nginx_package_name: nginx
+```
+
+### 4. Organisation des Tâches
+
+```yaml
+# tasks/main.yml - Point d'entrée
+---
+- name: Inclure les tâches spécifiques à l'OS
+  ansible.builtin.include_tasks: "{{ ansible_os_family | lower }}.yml"
+
+- name: Inclure l'installation
+  ansible.builtin.include_tasks: install.yml
+
+- name: Inclure la configuration
+  ansible.builtin.include_tasks: configure.yml
+
+- name: Inclure le démarrage des services
+  ansible.builtin.include_tasks: service.yml
+```
+
+```
+tasks/
+├── main.yml
+├── install.yml
+├── configure.yml
+├── service.yml
+├── debian.yml
+└── redhat.yml
+```
+
+### 5. Idempotence et Tests
+
+```yaml
+# Toujours vérifier l'état avant modification
+- name: Vérifier si le fichier existe
+  ansible.builtin.stat:
+    path: /etc/myapp/config.yml
+  register: config_file
+
+- name: Créer la configuration
+  ansible.builtin.template:
+    src: config.yml.j2
+    dest: /etc/myapp/config.yml
+  when: not config_file.stat.exists
+  notify: Redémarrer myapp
+```
+
+### 6. Documentation Complète
+
+```yaml
+# README.md du rôle
+```markdown
+# Rôle Nginx
+
+Installation et configuration de Nginx.
+
+## Variables
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| nginx_port | 80 | Port d'écoute |
+| nginx_enable_ssl | false | Activer SSL |
+
+## Dépendances
+
+- firewall
+
+## Exemple
+
+```yaml
+- hosts: webservers
+  roles:
+    - role: nginx
+      vars:
+        nginx_port: 8080
+```
+
+### 7. Tags pour Granularité d'Exécution
+
+```yaml
+# tasks/main.yml
+---
+- name: Installer les packages
+  ansible.builtin.apt:
+    name: "{{ packages }}"
+  tags:
+    - install
+    - packages
+
+- name: Configurer l'application
+  ansible.builtin.template:
+    src: config.j2
+    dest: /etc/app/config
+  tags:
+    - configure
+    - config
+
+- name: Démarrer le service
+  ansible.builtin.service:
+    name: myapp
+    state: started
+  tags:
+    - service
+```
+
+```bash
+# Exécuter uniquement l'installation
+ansible-playbook site.yml --tags install
+
+# Exécuter tout sauf la configuration
+ansible-playbook site.yml --skip-tags configure
+```
+
+### 8. Gestion Multi-OS
+
+```yaml
+# vars/Debian.yml
+---
+package_name: apache2
+service_name: apache2
+config_path: /etc/apache2
+
+# vars/RedHat.yml
+---
+package_name: httpd
+service_name: httpd
+config_path: /etc/httpd
+
+# tasks/main.yml
+---
+- name: Inclure les variables spécifiques à l'OS
+  ansible.builtin.include_vars: "{{ ansible_os_family }}.yml"
+
+- name: Installer le package
+  ansible.builtin.package:
+    name: "{{ package_name }}"
+    state: present
+```
+
+### 9. Molecule pour les Tests
+
+```bash
+# Installer Molecule
+pip install molecule molecule-docker
+
+# Initialiser Molecule dans un rôle
+cd roles/mon_role
+molecule init scenario
+
+# Structure générée
+roles/mon_role/
+└── molecule/
+    └── default/
+        ├── molecule.yml
+        ├── converge.yml
+        └── verify.yml
+
+# Tester le rôle
+molecule test
+```
+
+### 10. Structure de Projet Complète
+
+```
+mon_projet/
+├── ansible.cfg
+├── requirements.yml
+├── inventory/
+│   ├── production/
+│   │   ├── hosts.yml
+│   │   └── group_vars/
+│   └── staging/
+│       ├── hosts.yml
+│       └── group_vars/
+├── playbooks/
+│   ├── site.yml
+│   ├── webservers.yml
+│   └── databases.yml
+├── roles/
+│   ├── common/
+│   ├── webserver/
+│   └── database/
+├── collections/
+│   └── requirements.yml
+├── filter_plugins/
+├── library/
+└── docs/
+```
+
+---
+
+## Résumé
+
+Les **rôles** permettent d'organiser le code Ansible de manière modulaire et réutilisable avec une structure standardisée de 8 répertoires. Les **collections** regroupent modules, rôles et plugins dans un namespace unifié.
+
+**Points clés :**
+- Créer des rôles avec `ansible-galaxy init`
+- Gérer les dépendances via `requirements.yml`
+- Utiliser le FQCN pour les modules de collections
+- Un rôle = une responsabilité
+- Privilégier `defaults/` pour les variables utilisateur
+- Tester avec Molecule
+- Documenter exhaustivement
